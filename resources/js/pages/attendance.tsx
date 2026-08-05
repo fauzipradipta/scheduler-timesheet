@@ -1,12 +1,14 @@
 import { Head, useForm } from '@inertiajs/react';
 import type { SyntheticEvent } from 'react';
-import { useEffect, useMemo, useState } from 'react';
-import { store } from '@/routes/attendance';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import AttendanceCalendar from '@/components/attendance-calendar';
+import { download, store, upload } from '@/routes/attendance';
 
 type AttendanceEntry = {
     id: string;
     clockedInAt: string;
     clockedOutAt: string | null;
+    status: string;
     description: string;
 };
 
@@ -43,6 +45,11 @@ function formatDuration(milliseconds: number): string {
 }
 
 function entryDuration(entry: AttendanceEntry, now: number): number {
+    /** Only a present day accrues hours; a day off is just a mark. */
+    if (entry.status !== 'P') {
+        return 0;
+    }
+
     const clockedInAt = new Date(entry.clockedInAt).getTime();
     const clockedOutAt = entry.clockedOutAt
         ? new Date(entry.clockedOutAt).getTime()
@@ -53,11 +60,13 @@ function entryDuration(entry: AttendanceEntry, now: number): number {
 
 export default function Attendance({ entries, activeEntry }: AttendanceProps) {
     const [now, setNow] = useState(() => Date.now());
+    const fileInput = useRef<HTMLInputElement>(null);
     const { data, setData, transform, submit, processing, errors, reset } =
         useForm({
             action: activeEntry ? 'clock-out' : 'clock-in',
             description: '',
         });
+    const uploadForm = useForm<{ file: File | null }>({ file: null });
 
     useEffect(() => {
         const ticker = window.setInterval(() => setNow(Date.now()), 1000);
@@ -87,6 +96,24 @@ export default function Attendance({ entries, activeEntry }: AttendanceProps) {
         submit(store(), {
             preserveScroll: true,
             onSuccess: () => reset(),
+        });
+    };
+
+    const handleUpload = (file: File | undefined) => {
+        if (!file) {
+            return;
+        }
+
+        uploadForm.transform(() => ({ file }));
+        uploadForm.submit(upload(), {
+            preserveScroll: true,
+            onFinish: () => {
+                uploadForm.reset();
+
+                if (fileInput.current) {
+                    fileInput.current.value = '';
+                }
+            },
         });
     };
 
@@ -155,13 +182,13 @@ export default function Attendance({ entries, activeEntry }: AttendanceProps) {
                             className="mt-6 flex flex-col gap-3"
                         >
                             <label
-                                htmlFor="description"
+                                htmlFor="activity"
                                 className="text-sm font-medium"
                             >
-                                Description
+                                Activity / Remark
                             </label>
                             <textarea
-                                id="description"
+                                id="activity"
                                 value={data.description}
                                 onChange={(event) =>
                                     setData('description', event.target.value)
@@ -200,16 +227,60 @@ export default function Attendance({ entries, activeEntry }: AttendanceProps) {
                         </form>
                     </section>
 
+                    <AttendanceCalendar entries={entries} />
+
                     <section className="rounded-lg bg-white p-6 shadow-[inset_0px_0px_0px_1px_rgba(26,26,0,0.16)] dark:bg-[#161615] dark:shadow-[inset_0px_0px_0px_1px_#fffaed2d]">
-                        <div className="flex items-baseline justify-between gap-4">
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
                             <h2 className="font-medium">History</h2>
-                            <p className="text-sm text-[#706f6c] dark:text-[#A1A09A]">
-                                Today:{' '}
-                                <span className="font-mono tabular-nums">
-                                    {formatDuration(todayTotal)}
-                                </span>
-                            </p>
+                            <div className="flex items-baseline gap-4">
+                                <p className="text-sm text-[#706f6c] dark:text-[#A1A09A]">
+                                    Today:{' '}
+                                    <span className="font-mono tabular-nums">
+                                        {formatDuration(todayTotal)}
+                                    </span>
+                                </p>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        ref={fileInput}
+                                        type="file"
+                                        accept=".xlsx,.csv"
+                                        className="hidden"
+                                        onChange={(event) =>
+                                            handleUpload(
+                                                event.target.files?.[0],
+                                            )
+                                        }
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() =>
+                                            fileInput.current?.click()
+                                        }
+                                        disabled={uploadForm.processing}
+                                        className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
+                                    >
+                                        {uploadForm.processing
+                                            ? 'Uploading…'
+                                            : 'Upload timesheet'}
+                                    </button>
+                                    {entries.length > 0 && (
+                                        <a
+                                            href={download.url()}
+                                            download
+                                            className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
+                                        >
+                                            Download timesheet
+                                        </a>
+                                    )}
+                                </div>
+                            </div>
                         </div>
+
+                        {uploadForm.errors.file && (
+                            <p className="mt-3 text-sm text-[#f53003] dark:text-[#FF4433]">
+                                {uploadForm.errors.file}
+                            </p>
+                        )}
 
                         {entries.length === 0 ? (
                             <p className="mt-4 text-sm text-[#706f6c] dark:text-[#A1A09A]">
@@ -228,17 +299,23 @@ export default function Attendance({ entries, activeEntry }: AttendanceProps) {
                                                 <span className="mx-2 text-[#c9c8c4] dark:text-[#57564f]">
                                                     ·
                                                 </span>
-                                                <span className="font-mono tabular-nums">
-                                                    {formatTime(
-                                                        entry.clockedInAt,
-                                                    )}
-                                                    {' – '}
-                                                    {entry.clockedOutAt
-                                                        ? formatTime(
-                                                              entry.clockedOutAt,
-                                                          )
-                                                        : '…'}
-                                                </span>
+                                                {entry.status === 'P' ? (
+                                                    <span className="font-mono tabular-nums">
+                                                        {formatTime(
+                                                            entry.clockedInAt,
+                                                        )}
+                                                        {' – '}
+                                                        {entry.clockedOutAt
+                                                            ? formatTime(
+                                                                  entry.clockedOutAt,
+                                                              )
+                                                            : '…'}
+                                                    </span>
+                                                ) : (
+                                                    <span className="rounded-full bg-[#f5f5f4] px-2 py-0.5 text-xs font-medium dark:bg-[#232322]">
+                                                        {entry.status}
+                                                    </span>
+                                                )}
                                             </p>
                                             {entry.description && (
                                                 <p className="mt-1 text-sm break-words text-[#706f6c] dark:text-[#A1A09A]">
