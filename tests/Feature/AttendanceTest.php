@@ -1,8 +1,14 @@
 <?php
 
+use App\Models\User;
 use Illuminate\Http\Testing\File;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Testing\TestResponse;
+
+/** The attendance routes now sit behind the auth middleware. */
+beforeEach(function () {
+    $this->actingAs(User::factory()->create());
+});
 
 /**
  * @return list<array{id: string, clockedInAt: string, clockedOutAt: string|null, description: string}>

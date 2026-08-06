@@ -1,8 +1,10 @@
-import { Head, useForm } from '@inertiajs/react';
+import { Head, Link, useForm, usePage } from '@inertiajs/react';
 import type { SyntheticEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { destroy as logout } from '@/actions/App/Http/Controllers/Auth/AuthenticatedSessionController';
 import AttendanceCalendar from '@/components/attendance-calendar';
 import { download, store, upload } from '@/routes/attendance';
+import type { Auth } from '@/types';
 
 type AttendanceEntry = {
     id: string;
@@ -59,6 +61,7 @@ function entryDuration(entry: AttendanceEntry, now: number): number {
 }
 
 export default function Attendance({ entries, activeEntry }: AttendanceProps) {
+    const { auth } = usePage<{ auth: Auth }>().props;
     const [now, setNow] = useState(() => Date.now());
     const fileInput = useRef<HTMLInputElement>(null);
     const { data, setData, transform, submit, processing, errors, reset } =
@@ -131,9 +134,23 @@ export default function Attendance({ entries, activeEntry }: AttendanceProps) {
                                 Attendance
                             </h1>
                         </div>
-                        <p className="font-mono text-3xl tabular-nums">
-                            {new Date(now).toLocaleTimeString()}
-                        </p>
+                        <div className="flex items-center gap-4">
+                            <div className="text-right">
+                                <p className="font-mono text-3xl tabular-nums">
+                                    {new Date(now).toLocaleTimeString()}
+                                </p>
+                                <p className="text-xs text-[#706f6c] dark:text-[#A1A09A]">
+                                    {auth.user.name}
+                                </p>
+                            </div>
+                            <Link
+                                href={logout()}
+                                as="button"
+                                className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
+                            >
+                                Log out
+                            </Link>
+                        </div>
                     </header>
 
                     <section className="rounded-lg bg-white p-6 shadow-[inset_0px_0px_0px_1px_rgba(26,26,0,0.16)] dark:bg-[#161615] dark:shadow-[inset_0px_0px_0px_1px_#fffaed2d]">
