@@ -1,7 +1,7 @@
-import { queryParams, type RouteQueryOptions, type RouteDefinition, applyUrlDefaults } from './../../../wayfinder'
+import { queryParams, type RouteQueryOptions, type RouteDefinition, type RouteFormDefinition, applyUrlDefaults } from './../../../wayfinder'
 /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:113
+ * @see app/Http/Controllers/AttendanceController.php:141
  * @route '/attendance/entry'
  */
 export const store = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
@@ -16,7 +16,7 @@ store.definition = {
 
 /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:113
+ * @see app/Http/Controllers/AttendanceController.php:141
  * @route '/attendance/entry'
  */
 store.url = (options?: RouteQueryOptions) => {
@@ -25,7 +25,7 @@ store.url = (options?: RouteQueryOptions) => {
 
 /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:113
+ * @see app/Http/Controllers/AttendanceController.php:141
  * @route '/attendance/entry'
  */
 store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
@@ -33,9 +33,30 @@ store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
     method: 'post',
 })
 
+    /**
+* @see \App\Http\Controllers\AttendanceController::store
+ * @see app/Http/Controllers/AttendanceController.php:141
+ * @route '/attendance/entry'
+ */
+    const storeForm = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+        action: store.url(options),
+        method: 'post',
+    })
+
+            /**
+* @see \App\Http\Controllers\AttendanceController::store
+ * @see app/Http/Controllers/AttendanceController.php:141
+ * @route '/attendance/entry'
+ */
+        storeForm.post = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+            action: store.url(options),
+            method: 'post',
+        })
+    
+    store.form = storeForm
 /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:163
+ * @see app/Http/Controllers/AttendanceController.php:187
  * @route '/attendance/entry/{entry}'
  */
 export const destroy = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteDefinition<'delete'> => ({
@@ -50,7 +71,7 @@ destroy.definition = {
 
 /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:163
+ * @see app/Http/Controllers/AttendanceController.php:187
  * @route '/attendance/entry/{entry}'
  */
 destroy.url = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions) => {
@@ -78,13 +99,45 @@ destroy.url = (args: { entry: string | number } | [entry: string | number ] | st
 
 /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:163
+ * @see app/Http/Controllers/AttendanceController.php:187
  * @route '/attendance/entry/{entry}'
  */
 destroy.delete = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteDefinition<'delete'> => ({
     url: destroy.url(args, options),
     method: 'delete',
 })
+
+    /**
+* @see \App\Http\Controllers\AttendanceController::destroy
+ * @see app/Http/Controllers/AttendanceController.php:187
+ * @route '/attendance/entry/{entry}'
+ */
+    const destroyForm = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+        action: destroy.url(args, {
+                    [options?.mergeQuery ? 'mergeQuery' : 'query']: {
+                        _method: 'DELETE',
+                        ...(options?.query ?? options?.mergeQuery ?? {}),
+                    }
+                }),
+        method: 'post',
+    })
+
+            /**
+* @see \App\Http\Controllers\AttendanceController::destroy
+ * @see app/Http/Controllers/AttendanceController.php:187
+ * @route '/attendance/entry/{entry}'
+ */
+        destroyForm.delete = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+            action: destroy.url(args, {
+                        [options?.mergeQuery ? 'mergeQuery' : 'query']: {
+                            _method: 'DELETE',
+                            ...(options?.query ?? options?.mergeQuery ?? {}),
+                        }
+                    }),
+            method: 'post',
+        })
+    
+    destroy.form = destroyForm
 const entry = {
     store: Object.assign(store, store),
 destroy: Object.assign(destroy, destroy),

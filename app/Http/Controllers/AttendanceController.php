@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Attendance;
 use Carbon\Exceptions\InvalidFormatException;
 use DOMDocument;
 use DOMElement;
@@ -9,6 +10,7 @@ use DOMXPath;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -23,8 +25,6 @@ use ZipArchive;
  */
 class AttendanceController extends Controller
 {
-    private const SESSION_KEY = 'attendance.entries';
-
     /**
      * The template's own legend, mapped to the column each status is counted in.
      *
@@ -69,6 +69,34 @@ class AttendanceController extends Controller
     private const REMARK_COLUMN = 'K';
 
     /**
+     * The template's own period label, which it formats from a date serial.
+     */
+    private const PERIOD_CELL = 'B8';
+
+    /**
+     * The light grey the template already paints its weekends with.
+     */
+    private const WEEKEND_FILL = 4;
+
+    private const PLAIN_FILL = 0;
+
+    /**
+     * The table body the weekend shading spans. The date column is left out
+     * because it carries its own grey on every row.
+     *
+     * @var list<string>
+     */
+    private const SHADED_COLUMNS = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'];
+
+    /**
+     * Cell formats already cloned for a fill, keyed "source:fill", so a workbook
+     * gains one new format per format it actually repaints rather than one per cell.
+     *
+     * @var array<string, int>
+     */
+    private array $styleVariants = [];
+
+    /**
      * Excel counts days from 1899-12-30, which is 25569 days before the Unix epoch.
      */
     private const EXCEL_EPOCH_OFFSET = 25569;
@@ -96,11 +124,11 @@ class AttendanceController extends Controller
 
         $description = trim((string) ($validated['description'] ?? ''));
 
-        $entries = $validated['action'] === 'clock-in'
-            ? $this->clockIn($this->entries($request), $description)
-            : $this->clockOut($this->entries($request), $description);
-
-        $request->session()->put(self::SESSION_KEY, $entries);
+        if ($validated['action'] === 'clock-in') {
+            $this->clockIn($request, $description);
+        } else {
+            $this->clockOut($request, $description);
+        }
 
         return to_route('attendance.index');
     }
@@ -120,7 +148,6 @@ class AttendanceController extends Controller
             'description' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        $entries = $this->entries($request);
         $present = $validated['status'] === self::PRESENT;
 
         /** Only a present day carries hours; the rest just mark the day. */
@@ -138,21 +165,18 @@ class AttendanceController extends Controller
             $clockedOutAt = $clockedOutAt->addDay();
         }
 
-        if ($present && $clockedOutAt === null && $this->activeEntry($entries) !== null) {
+        if ($present && $clockedOutAt === null && $this->openEntry($request) !== null) {
             throw ValidationException::withMessages([
                 'endedAt' => 'Give this day an end time, because another entry is still running.',
             ]);
         }
 
-        $entries[] = [
-            'id' => (string) Str::uuid(),
-            'clockedInAt' => $clockedInAt->toIso8601String(),
-            'clockedOutAt' => $clockedOutAt?->toIso8601String(),
+        $request->user()->attendances()->create([
+            'clocked_in_at' => $clockedInAt,
+            'clocked_out_at' => $clockedOutAt,
             'status' => $validated['status'],
             'description' => trim((string) ($validated['description'] ?? '')),
-        ];
-
-        $request->session()->put(self::SESSION_KEY, $this->newestFirst($entries));
+        ]);
 
         return to_route('attendance.index');
     }
@@ -162,12 +186,7 @@ class AttendanceController extends Controller
      */
     public function destroyEntry(Request $request, string $entry): RedirectResponse
     {
-        $remaining = array_filter(
-            $this->entries($request),
-            fn (array $stored): bool => $stored['id'] !== $entry,
-        );
-
-        $request->session()->put(self::SESSION_KEY, array_values($remaining));
+        $request->user()->attendances()->whereKey($entry)->delete();
 
         return to_route('attendance.index');
     }
@@ -177,10 +196,16 @@ class AttendanceController extends Controller
      */
     public function download(Request $request): BinaryFileResponse
     {
-        $path = $this->fill($this->entries($request));
+        $validated = $request->validate([
+            'month' => ['nullable', 'date_format:Y-m'],
+        ]);
+
+        $month = Carbon::createFromFormat('Y-m', $validated['month'] ?? now()->format('Y-m'))->startOfMonth();
+
+        $path = $this->fill($this->entries($request), $month);
 
         return response()
-            ->download($path, 'timesheet-'.now()->format('Y-m').'.xlsx')
+            ->download($path, 'timesheet-'.$month->format('Y-m').'.xlsx')
             ->deleteFileAfterSend();
     }
 
@@ -212,19 +237,30 @@ class AttendanceController extends Controller
             ]);
         }
 
-        $request->session()->put(self::SESSION_KEY, $entries);
+        /** An upload replaces the log outright, so a half written import must not survive. */
+        DB::transaction(function () use ($request, $entries): void {
+            $request->user()->attendances()->delete();
+
+            $request->user()->attendances()->createMany(array_map(fn (array $entry): array => [
+                'clocked_in_at' => Carbon::parse($entry['clockedInAt']),
+                'clocked_out_at' => $entry['clockedOutAt'] !== null ? Carbon::parse($entry['clockedOutAt']) : null,
+                'status' => $entry['status'],
+                'description' => $entry['description'],
+            ], $entries));
+        });
 
         return to_route('attendance.index');
     }
 
     /**
-     * Copy the template and write each day's hours into the cells the template
-     * already laid out, leaving days without attendance untouched.
+     * Copy the template and write the requested month into it: the period label,
+     * the date column, and each day's hours. Days without attendance keep the
+     * empty cells the template author laid out.
      *
      * @param  list<Entry>  $entries
      * @return string the path of the filled copy
      */
-    private function fill(array $entries): string
+    private function fill(array $entries, Carbon $month): string
     {
         $template = resource_path('templates/timesheet.xlsx');
 
@@ -245,20 +281,56 @@ class AttendanceController extends Controller
             throw new RuntimeException('The timesheet template has no first worksheet.');
         }
 
+        $stylesXml = $zip->getFromName('xl/styles.xml');
+
+        if ($stylesXml === false) {
+            throw new RuntimeException('The timesheet template has no styles.');
+        }
+
         $document = new DOMDocument;
         $document->loadXML($sheet);
         $xpath = $this->xpath($document);
 
+        $styles = new DOMDocument;
+        $styles->loadXML($stylesXml);
+        $cellXfs = $styles->getElementsByTagName('cellXfs')->item(0);
+
+        if (! $cellXfs instanceof DOMElement) {
+            throw new RuntimeException('The timesheet template has no cell formats.');
+        }
+
+        /** The clones are only meaningful for this workbook's style table. */
+        $this->styleVariants = [];
+
         $byDate = $this->groupByDate($entries);
 
-        foreach (range(self::FIRST_DATA_ROW, self::LAST_DATA_ROW) as $row) {
-            $serial = $this->numberAt($xpath, self::DATE_COLUMN.$row);
+        /** The template writes its own period heading from a date serial. */
+        $this->setNumber($document, $xpath, self::PERIOD_CELL, $this->serialFromDate($month));
 
-            if ($serial === null) {
+        $daysInMonth = $month->daysInMonth;
+
+        foreach (range(self::FIRST_DATA_ROW, self::LAST_DATA_ROW) as $index => $row) {
+            $dayOfMonth = $index + 1;
+
+            /** The template holds 31 day rows, so a shorter month leaves spares to clear. */
+            if ($dayOfMonth > $daysInMonth) {
+                $this->clearRow($xpath, $row);
+                $this->shadeRow($xpath, $cellXfs, $row, self::PLAIN_FILL);
+
                 continue;
             }
 
-            $day = $byDate[$this->dateFromSerial($serial)] ?? [];
+            $date = $month->copy()->setDay($dayOfMonth);
+
+            $this->setNumber($document, $xpath, self::DATE_COLUMN.$row, $this->serialFromDate($date));
+
+            /**
+             * The template's own shading was painted for the month it shipped with,
+             * so every row is repainted from the requested month's calendar.
+             */
+            $this->shadeRow($xpath, $cellXfs, $row, $date->isWeekend() ? self::WEEKEND_FILL : self::PLAIN_FILL);
+
+            $day = $byDate[$date->format('Y-m-d')] ?? [];
 
             if ($day === []) {
                 continue;
@@ -268,6 +340,7 @@ class AttendanceController extends Controller
         }
 
         $zip->addFromString('xl/worksheets/sheet1.xml', (string) $document->saveXML());
+        $zip->addFromString('xl/styles.xml', (string) $styles->saveXML());
 
         /** The cached results of the template's COUNTA totals are stale once we add days. */
         $zip->deleteName('xl/calcChain.xml');
@@ -552,6 +625,105 @@ class AttendanceController extends Controller
     }
 
     /**
+     * The inverse of dateFromSerial, so a written date reads back as the same day.
+     */
+    private function serialFromDate(Carbon $date): float
+    {
+        $midnight = Carbon::createFromFormat('Y-m-d', $date->format('Y-m-d'), 'UTC')->startOfDay();
+
+        return $midnight->getTimestamp() / self::SECONDS_PER_DAY + self::EXCEL_EPOCH_OFFSET;
+    }
+
+    /**
+     * Repaint a day row's background, keeping every other part of each cell's
+     * format - its borders, fonts and number formats - exactly as it was.
+     */
+    private function shadeRow(DOMXPath $xpath, DOMElement $cellXfs, int $row, int $fillId): void
+    {
+        foreach (self::SHADED_COLUMNS as $column) {
+            $cell = $this->find($xpath, '//x:c[@r="'.$column.$row.'"]');
+
+            if ($cell === null) {
+                continue;
+            }
+
+            $cell->setAttribute('s', (string) $this->variantOf($cellXfs, (int) $cell->getAttribute('s'), $fillId));
+        }
+    }
+
+    /**
+     * The index of a cell format that matches the given one but paints the given
+     * fill, adding it to the workbook's format table the first time it is asked for.
+     */
+    private function variantOf(DOMElement $cellXfs, int $source, int $fillId): int
+    {
+        $key = $source.':'.$fillId;
+
+        if (isset($this->styleVariants[$key])) {
+            return $this->styleVariants[$key];
+        }
+
+        $formats = $cellXfs->getElementsByTagName('xf');
+        $origin = $formats->item($source);
+
+        if (! $origin instanceof DOMElement) {
+            return $source;
+        }
+
+        if ((int) $origin->getAttribute('fillId') === $fillId) {
+            return $this->styleVariants[$key] = $source;
+        }
+
+        /** The list is live, so its length before the clone is the clone's own index. */
+        $index = $formats->length;
+
+        $clone = $origin->cloneNode(true);
+
+        if (! $clone instanceof DOMElement) {
+            return $source;
+        }
+
+        $clone->setAttribute('fillId', (string) $fillId);
+        $clone->setAttribute('applyFill', '1');
+
+        $cellXfs->appendChild($clone);
+        $cellXfs->setAttribute('count', (string) ($index + 1));
+
+        return $this->styleVariants[$key] = $index;
+    }
+
+    /**
+     * Blank every cell the attendance log writes to, so the template's spare
+     * rows do not keep a day that the requested month does not have.
+     */
+    private function clearRow(DOMXPath $xpath, int $row): void
+    {
+        $columns = [
+            self::DATE_COLUMN,
+            self::START_COLUMN,
+            self::END_COLUMN,
+            self::TOTAL_COLUMN,
+            ...array_values(self::STATUSES),
+            self::REMARK_COLUMN,
+        ];
+
+        foreach ($columns as $column) {
+            $cell = $this->find($xpath, '//x:c[@r="'.$column.$row.'"]');
+
+            if ($cell === null) {
+                continue;
+            }
+
+            /** Dropping the value leaves the cell's own borders and formats alone. */
+            $cell->removeAttribute('t');
+
+            while ($cell->firstChild !== null) {
+                $cell->removeChild($cell->firstChild);
+            }
+        }
+    }
+
+    /**
      * Tell Excel to recalculate the template's own totals when the file is opened.
      */
     private function forceRecalculation(ZipArchive $zip): void
@@ -768,77 +940,76 @@ class AttendanceController extends Controller
     }
 
     /**
-     * Open a new entry, newest first.
-     *
-     * @param  list<Entry>  $entries
-     * @return list<Entry>
+     * Open a new entry for the signed in user.
      *
      * @throws ValidationException
      */
-    private function clockIn(array $entries, string $description): array
+    private function clockIn(Request $request, string $description): void
     {
-        if ($this->activeEntry($entries) !== null) {
+        if ($this->openEntry($request) !== null) {
             throw ValidationException::withMessages([
                 'action' => 'You are already clocked in.',
             ]);
         }
 
-        array_unshift($entries, [
-            'id' => (string) Str::uuid(),
-            'clockedInAt' => now()->toIso8601String(),
-            'clockedOutAt' => null,
+        $request->user()->attendances()->create([
+            'clocked_in_at' => now(),
+            'clocked_out_at' => null,
             'status' => self::PRESENT,
             'description' => $description,
         ]);
-
-        return $entries;
     }
 
     /**
      * Close the open entry, keeping its original description when no new one is written.
      *
-     * @param  list<Entry>  $entries
-     * @return list<Entry>
-     *
      * @throws ValidationException
      */
-    private function clockOut(array $entries, string $description): array
+    private function clockOut(Request $request, string $description): void
     {
-        $activeEntry = $this->activeEntry($entries);
+        $openEntry = $this->openEntry($request);
 
-        if ($activeEntry === null) {
+        if ($openEntry === null) {
             throw ValidationException::withMessages([
                 'action' => 'You are not clocked in.',
             ]);
         }
 
-        return array_map(function (array $entry) use ($activeEntry, $description): array {
-            if ($entry['id'] !== $activeEntry['id']) {
-                return $entry;
-            }
-
-            return [
-                ...$entry,
-                'clockedOutAt' => now()->toIso8601String(),
-                'description' => $description !== '' ? $description : $entry['description'],
-            ];
-        }, $entries);
+        $openEntry->update([
+            'clocked_out_at' => now(),
+            'description' => $description !== '' ? $description : $openEntry->description,
+        ]);
     }
 
     /**
-     * Entries logged before statuses existed are read back as present days.
+     * The signed in user's days, newest first.
      *
      * @return list<Entry>
      */
     private function entries(Request $request): array
     {
-        return array_map(fn (array $entry): array => [
-            'id' => (string) $entry['id'],
-            'clockedInAt' => (string) $entry['clockedInAt'],
-            'clockedOutAt' => isset($entry['clockedOutAt']) ? (string) $entry['clockedOutAt'] : null,
-            'status' => (string) ($entry['status'] ?? self::PRESENT),
-            'description' => (string) ($entry['description'] ?? ''),
-        ], array_values((array) $request->session()->get(self::SESSION_KEY, [])));
+        return array_values(
+            $request->user()
+                ->attendances()
+                ->orderByDesc('clocked_in_at')
+                ->get()
+                ->map(fn (Attendance $attendance): array => $attendance->toEntry())
+                ->all()
+        );
+    }
+
+    /**
+     * The row the user is currently clocked into, if any. Only a present day can
+     * be running; a sick or vacation day simply has no hours.
+     */
+    private function openEntry(Request $request): ?Attendance
+    {
+        return $request->user()
+            ->attendances()
+            ->whereNull('clocked_out_at')
+            ->where('status', self::PRESENT)
+            ->latest('clocked_in_at')
+            ->first();
     }
 
     /**

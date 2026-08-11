@@ -1,26 +1,49 @@
 <?php
 
+use App\Models\Attendance;
 use App\Models\User;
 use Illuminate\Http\Testing\File;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Carbon;
 use Illuminate\Testing\TestResponse;
 
 /** The attendance routes now sit behind the auth middleware. */
 beforeEach(function () {
-    $this->actingAs(User::factory()->create());
+    $this->user = User::factory()->create();
+
+    $this->actingAs($this->user);
 });
 
 /**
- * @return list<array{id: string, clockedInAt: string, clockedOutAt: string|null, description: string}>
+ * Put a day in the signed in user's log.
  */
-function openAttendanceEntry(string $description = 'Started the shift'): array
+function logEntry(string $clockedInAt, ?string $clockedOutAt = null, string $status = 'P', string $description = ''): Attendance
 {
-    return [[
-        'id' => 'entry-1',
-        'clockedInAt' => now()->subHour()->toIso8601String(),
-        'clockedOutAt' => null,
+    return Attendance::factory()->for(test()->user)->create([
+        'clocked_in_at' => Carbon::parse($clockedInAt),
+        'clocked_out_at' => $clockedOutAt !== null ? Carbon::parse($clockedOutAt) : null,
+        'status' => $status,
         'description' => $description,
-    ]];
+    ]);
+}
+
+function openAttendanceEntry(string $description = 'Started the shift'): Attendance
+{
+    return logEntry(now()->subHour()->toIso8601String(), null, 'P', $description);
+}
+
+/**
+ * Read the log back in the shape the page and the timesheet writer speak.
+ *
+ * @return list<array{id: string, clockedInAt: string, clockedOutAt: string|null, status: string, description: string}>
+ */
+function storedEntries(): array
+{
+    return test()->user->attendances()
+        ->orderByDesc('clocked_in_at')
+        ->get()
+        ->map(fn (Attendance $attendance): array => $attendance->toEntry())
+        ->all();
 }
 
 test('the attendance page starts with no entries', function () {
@@ -34,12 +57,13 @@ test('the attendance page starts with no entries', function () {
 });
 
 test('the attendance page exposes the open entry', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->get(route('attendance.index'))
+    $entry = openAttendanceEntry();
+
+    $this->get(route('attendance.index'))
         ->assertOk()
         ->assertInertia(fn ($page) => $page
             ->has('entries', 1)
-            ->where('activeEntry.id', 'entry-1')
+            ->where('activeEntry.id', (string) $entry->id)
             ->where('activeEntry.description', 'Started the shift')
             ->where('activeEntry.clockedOutAt', null)
         );
@@ -49,37 +73,43 @@ test('clocking in opens an entry with a description', function () {
     $this->post(route('attendance.store'), [
         'action' => 'clock-in',
         'description' => 'Started the shift',
-    ])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 1
-            && $entries[0]['description'] === 'Started the shift'
-            && $entries[0]['clockedOutAt'] === null
-        );
+    ])->assertRedirect(route('attendance.index'));
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['description'])->toBe('Started the shift')
+        ->and($entries[0]['clockedOutAt'])->toBeNull();
 });
 
 test('clocking out closes the open entry', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->post(route('attendance.store'), [
-            'action' => 'clock-out',
-            'description' => 'Wrapped up the report',
-        ])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 1
-            && $entries[0]['description'] === 'Wrapped up the report'
-            && $entries[0]['clockedOutAt'] !== null
-        );
+    openAttendanceEntry();
+
+    $this->post(route('attendance.store'), [
+        'action' => 'clock-out',
+        'description' => 'Wrapped up the report',
+    ])->assertRedirect(route('attendance.index'));
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['description'])->toBe('Wrapped up the report')
+        ->and($entries[0]['clockedOutAt'])->not->toBeNull();
 });
 
 test('clocking out keeps the existing description when none is written', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->post(route('attendance.store'), ['action' => 'clock-out'])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', fn (array $entries) => $entries[0]['description'] === 'Started the shift');
+    openAttendanceEntry();
+
+    $this->post(route('attendance.store'), ['action' => 'clock-out'])
+        ->assertRedirect(route('attendance.index'));
+
+    expect(storedEntries()[0]['description'])->toBe('Started the shift');
 });
 
 test('a user cannot clock in twice', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->post(route('attendance.store'), ['action' => 'clock-in'])
+    openAttendanceEntry();
+
+    $this->post(route('attendance.store'), ['action' => 'clock-in'])
         ->assertSessionHasErrors('action');
 });
 
@@ -93,6 +123,20 @@ test('the action is required', function () {
         ->assertSessionHasErrors('action');
 });
 
+test('one user cannot see or close another user\'s day', function () {
+    $entry = Attendance::factory()->for(User::factory())->running()->create();
+
+    $this->get(route('attendance.index'))
+        ->assertInertia(fn ($page) => $page->where('entries', [])->where('activeEntry', null));
+
+    $this->post(route('attendance.store'), ['action' => 'clock-out'])
+        ->assertSessionHasErrors('action');
+
+    $this->delete(route('attendance.entry.destroy', $entry->id));
+
+    expect(Attendance::whereKey($entry->id)->exists())->toBeTrue();
+});
+
 test('a day picked from the calendar is added to the log', function () {
     $this->post(route('attendance.entry.store'), [
         'date' => '2026-08-12',
@@ -100,31 +144,30 @@ test('a day picked from the calendar is added to the log', function () {
         'startedAt' => '08:30',
         'endedAt' => '16:45',
         'description' => 'Release prep',
-    ])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 1
-            && str_starts_with($entries[0]['clockedInAt'], '2026-08-12T08:30:00')
-            && str_starts_with($entries[0]['clockedOutAt'], '2026-08-12T16:45:00')
-            && $entries[0]['description'] === 'Release prep'
-        );
+    ])->assertRedirect(route('attendance.index'));
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['clockedInAt'])->toStartWith('2026-08-12T08:30:00')
+        ->and($entries[0]['clockedOutAt'])->toStartWith('2026-08-12T16:45:00')
+        ->and($entries[0]['description'])->toBe('Release prep');
 });
 
 test('the log stays newest first when an older day is added', function () {
-    $this->withSession(['attendance.entries' => [[
-        'id' => 'entry-1',
-        'clockedInAt' => '2026-08-20T09:00:00+00:00',
-        'clockedOutAt' => '2026-08-20T17:00:00+00:00',
-        'description' => 'Later day',
-    ]]])
-        ->post(route('attendance.entry.store'), [
-            'date' => '2026-08-03',
-            'status' => 'P',
-            'startedAt' => '09:00',
-            'endedAt' => '17:00',
-        ])
-        ->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 2
-            && $entries[0]['description'] === 'Later day'
-        );
+    logEntry('2026-08-20T09:00:00+00:00', '2026-08-20T17:00:00+00:00', 'P', 'Later day');
+
+    $this->post(route('attendance.entry.store'), [
+        'date' => '2026-08-03',
+        'status' => 'P',
+        'startedAt' => '09:00',
+        'endedAt' => '17:00',
+    ]);
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(2)
+        ->and($entries[0]['description'])->toBe('Later day');
 });
 
 test('a calendar day that ends before it starts runs past midnight', function () {
@@ -133,7 +176,9 @@ test('a calendar day that ends before it starts runs past midnight', function ()
         'status' => 'P',
         'startedAt' => '22:00',
         'endedAt' => '06:00',
-    ])->assertSessionHas('attendance.entries', fn (array $entries) => str_starts_with($entries[0]['clockedOutAt'], '2026-08-13T06:00:00'));
+    ]);
+
+    expect(storedEntries()[0]['clockedOutAt'])->toStartWith('2026-08-13T06:00:00');
 });
 
 test('a calendar day may be left running when nothing else is open', function () {
@@ -141,16 +186,19 @@ test('a calendar day may be left running when nothing else is open', function ()
         'date' => '2026-08-12',
         'status' => 'P',
         'startedAt' => '09:00',
-    ])->assertSessionHas('attendance.entries', fn (array $entries) => $entries[0]['clockedOutAt'] === null);
+    ]);
+
+    expect(storedEntries()[0]['clockedOutAt'])->toBeNull();
 });
 
 test('a second running day is rejected', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->post(route('attendance.entry.store'), [
-            'date' => '2026-08-12',
-            'status' => 'P',
-            'startedAt' => '09:00',
-        ])->assertSessionHasErrors('endedAt');
+    openAttendanceEntry();
+
+    $this->post(route('attendance.entry.store'), [
+        'date' => '2026-08-12',
+        'status' => 'P',
+        'startedAt' => '09:00',
+    ])->assertSessionHasErrors('endedAt');
 });
 
 test('the calendar rejects a malformed date or time', function () {
@@ -181,13 +229,14 @@ test('a day off is recorded without hours', function () {
         'date' => '2026-08-12',
         'status' => 'S',
         'description' => 'Flu',
-    ])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 1
-            && $entries[0]['status'] === 'S'
-            && $entries[0]['clockedOutAt'] === null
-            && str_starts_with($entries[0]['clockedInAt'], '2026-08-12T00:00:00')
-        );
+    ])->assertRedirect(route('attendance.index'));
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['status'])->toBe('S')
+        ->and($entries[0]['clockedOutAt'])->toBeNull()
+        ->and($entries[0]['clockedInAt'])->toStartWith('2026-08-12T00:00:00');
 });
 
 test('a day off does not block clocking in', function () {
@@ -201,29 +250,11 @@ test('a day off does not block clocking in', function () {
 });
 
 test('the status of each day lands in its own template column', function () {
-    $cells = cells(downloaded($this->withSession(['attendance.entries' => [
-        [
-            'id' => 'entry-1',
-            'clockedInAt' => '2026-08-05T09:00:00+00:00',
-            'clockedOutAt' => '2026-08-05T17:00:00+00:00',
-            'status' => 'P',
-            'description' => 'Worked',
-        ],
-        [
-            'id' => 'entry-2',
-            'clockedInAt' => '2026-08-06T00:00:00+00:00',
-            'clockedOutAt' => null,
-            'status' => 'S',
-            'description' => 'Flu',
-        ],
-        [
-            'id' => 'entry-3',
-            'clockedInAt' => '2026-08-07T00:00:00+00:00',
-            'clockedOutAt' => null,
-            'status' => 'BT',
-            'description' => 'Client visit',
-        ],
-    ]])->get(route('attendance.download'))));
+    logEntry('2026-08-05T09:00:00+00:00', '2026-08-05T17:00:00+00:00', 'P', 'Worked');
+    logEntry('2026-08-06T00:00:00+00:00', null, 'S', 'Flu');
+    logEntry('2026-08-07T00:00:00+00:00', null, 'BT', 'Client visit');
+
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
 
     /** Present lands in E, sick in F, business trip in G. */
     expect($cells['E15'])->toBe('P')
@@ -235,34 +266,37 @@ test('the status of each day lands in its own template column', function () {
 });
 
 test('a day off round trips through the template', function () {
-    $workbook = downloaded($this->withSession(['attendance.entries' => [[
-        'id' => 'entry-1',
-        'clockedInAt' => '2026-08-06T00:00:00+00:00',
-        'clockedOutAt' => null,
-        'status' => 'V',
-        'description' => 'Annual leave',
-    ]]])->get(route('attendance.download')));
+    logEntry('2026-08-06T00:00:00+00:00', null, 'V', 'Annual leave');
+
+    $workbook = downloaded($this->get(route('attendance.download', ['month' => '2026-08'])));
 
     $this->post(route('attendance.upload'), [
         'file' => UploadedFile::fake()->createWithContent('timesheet.xlsx', $workbook),
-    ])->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 1
-        && $entries[0]['status'] === 'V'
-        && $entries[0]['description'] === 'Annual leave'
-        && $entries[0]['clockedOutAt'] === null
-    );
+    ]);
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['status'])->toBe('V')
+        ->and($entries[0]['description'])->toBe('Annual leave')
+        ->and($entries[0]['clockedOutAt'])->toBeNull();
 });
 
 test('a day can be removed from the calendar', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->delete(route('attendance.entry.destroy', 'entry-1'))
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', []);
+    $entry = openAttendanceEntry();
+
+    $this->delete(route('attendance.entry.destroy', $entry->id))
+        ->assertRedirect(route('attendance.index'));
+
+    expect(storedEntries())->toBe([]);
 });
 
 test('removing an unknown day leaves the log alone', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->delete(route('attendance.entry.destroy', 'missing'))
-        ->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 1);
+    openAttendanceEntry();
+
+    $this->delete(route('attendance.entry.destroy', 'missing'));
+
+    expect(storedEntries())->toHaveCount(1);
 });
 
 function downloaded(TestResponse $response): string
@@ -318,15 +352,115 @@ function cells(string $contents): array
     return $values;
 }
 
-test('the download fills the template row that matches the day', function () {
-    $response = $this->withSession(['attendance.entries' => [[
-        'id' => 'entry-1',
-        'clockedInAt' => '2026-08-05T09:12:00+00:00',
-        'clockedOutAt' => '2026-08-05T17:03:00+00:00',
-        'description' => 'Sprint planning',
-    ]]])->get(route('attendance.download'));
+/**
+ * Resolve the background fill each cell of the first worksheet paints with.
+ *
+ * @return array<string, int>
+ */
+function fills(string $contents): array
+{
+    $path = tempnam(sys_get_temp_dir(), 'downloaded');
+    file_put_contents($path, $contents);
 
-    $response->assertOk()->assertDownload('timesheet-'.now()->format('Y-m').'.xlsx');
+    $zip = new ZipArchive;
+    $zip->open($path);
+    $sheet = $zip->getFromName('xl/worksheets/sheet1.xml');
+    $stylesXml = $zip->getFromName('xl/styles.xml');
+    $zip->close();
+    unlink($path);
+
+    $styles = new DOMDocument;
+    $styles->loadXML((string) $stylesXml);
+
+    $fillOf = [];
+
+    foreach ($styles->getElementsByTagName('cellXfs')->item(0)->getElementsByTagName('xf') as $format) {
+        $fillOf[] = (int) $format->getAttribute('fillId');
+    }
+
+    $document = new DOMDocument;
+    $document->loadXML((string) $sheet);
+
+    $painted = [];
+
+    foreach ($document->getElementsByTagName('c') as $cell) {
+        $painted[$cell->getAttribute('r')] = $fillOf[(int) $cell->getAttribute('s')] ?? 0;
+    }
+
+    return $painted;
+}
+
+test('the weekend rows are shaded for the requested month', function () {
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    /** August 2026 opens on a Saturday, so its first two rows are the weekend. */
+    expect($painted['B11'])->toBe(4)
+        ->and($painted['N12'])->toBe(4)
+        ->and($painted['B13'])->toBe(0);
+});
+
+test('the shading follows the month rather than the template', function () {
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-09']))));
+
+    /** September 2026 opens on a Tuesday, so the first weekend is the 5th and 6th. */
+    expect($painted['B11'])->toBe(0)
+        ->and($painted['B15'])->toBe(4)
+        ->and($painted['B16'])->toBe(4)
+        ->and($painted['B17'])->toBe(0);
+});
+
+test('a weekday the template shaded by hand is repainted plain', function () {
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    /** The template painted rows 27 and 35 grey though both are weekdays. */
+    expect($painted['B27'])->toBe(0)
+        ->and($painted['B35'])->toBe(0);
+});
+
+test('shading reuses cell formats rather than cloning one per cell', function () {
+    $path = tempnam(sys_get_temp_dir(), 'downloaded');
+    file_put_contents($path, downloaded($this->get(route('attendance.download', ['month' => '2026-09']))));
+
+    $zip = new ZipArchive;
+    $zip->open($path);
+    $styles = $zip->getFromName('xl/styles.xml');
+    $zip->close();
+    unlink($path);
+
+    $document = new DOMDocument;
+    $document->loadXML((string) $styles);
+
+    $formats = $document->getElementsByTagName('cellXfs')->item(0)->getElementsByTagName('xf')->length;
+
+    /** 31 rows of 13 columns would be 403 clones without the format cache. */
+    expect($formats)->toBeLessThan(220);
+});
+
+test('a cleared spare row is not shaded', function () {
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-09']))));
+
+    expect($painted['B41'])->toBe(0);
+});
+
+test('shading a day keeps its borders and number format', function () {
+    logEntry('2026-08-01T09:00:00+00:00', '2026-08-01T17:00:00+00:00', 'P', 'Saturday shift');
+
+    $response = $this->get(route('attendance.download', ['month' => '2026-08']));
+    $contents = downloaded($response);
+
+    /** A shaded Saturday still reads its hours back as hours. */
+    $cells = cells($contents);
+
+    expect(round((float) $cells['B11'] * 24))->toBe(9.0)
+        ->and(fills($contents)['B11'])->toBe(4);
+});
+
+test('the download fills the template row that matches the day', function () {
+    logEntry('2026-08-05T09:12:00+00:00', '2026-08-05T17:03:00+00:00', 'P', 'Sprint planning');
+
+    $response = $this->get(route('attendance.download', ['month' => '2026-08']));
+
+    $response->assertOk()->assertDownload('timesheet-2026-08.xlsx');
 
     $cells = cells(downloaded($response));
 
@@ -339,7 +473,7 @@ test('the download fills the template row that matches the day', function () {
 });
 
 test('the download keeps the template header and signature block', function () {
-    $cells = cells(downloaded($this->get(route('attendance.download'))));
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
 
     expect($cells['A9'])->toBe('DATE')
         ->and($cells['A11'])->toBe('46235')
@@ -347,33 +481,95 @@ test('the download keeps the template header and signature block', function () {
         ->and($cells)->toHaveKey('B54');
 });
 
+test('a day clocked in another month lands in that month\'s sheet', function () {
+    logEntry('2026-07-06T09:00:00+00:00', '2026-07-06T17:00:00+00:00', 'P', 'July work');
+
+    $response = $this->get(route('attendance.download', ['month' => '2026-07']));
+
+    $response->assertOk()->assertDownload('timesheet-2026-07.xlsx');
+
+    $cells = cells(downloaded($response));
+
+    /** The sixth of July is the sixth date row of the template. */
+    expect(round((float) $cells['B16'] * 24))->toBe(9.0)
+        ->and(round((float) $cells['C16'] * 24))->toBe(17.0)
+        ->and($cells['E16'])->toBe('P')
+        ->and($cells['K16'])->toBe('July work');
+});
+
+test('the period heading and date column follow the requested month', function () {
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-07']))));
+
+    /** The first of July 2026 as an Excel serial. */
+    expect((float) $cells['B8'])->toBe(46204.0)
+        ->and((float) $cells['A11'])->toBe(46204.0)
+        ->and((float) $cells['A41'])->toBe(46234.0);
+});
+
+test('another month\'s days stay out of the sheet', function () {
+    logEntry('2026-07-06T09:00:00+00:00', '2026-07-06T17:00:00+00:00', 'P', 'July work');
+
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    /** Nothing in August was worked, so no row carries hours. */
+    expect($cells)->not->toHaveKey('B16')
+        ->and($cells)->not->toHaveKey('E16')
+        ->and($cells)->not->toHaveKey('K16');
+});
+
+test('a thirty day month clears the template spare row', function () {
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-09']))));
+
+    /** September has 30 days, so the last of the template's 31 rows is blank. */
+    expect($cells)->toHaveKey('A40')
+        ->and($cells)->not->toHaveKey('A41');
+});
+
+test('february clears the template spare rows', function () {
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-02']))));
+
+    expect($cells)->toHaveKey('A38')
+        ->and($cells)->not->toHaveKey('A39')
+        ->and($cells)->not->toHaveKey('A40')
+        ->and($cells)->not->toHaveKey('A41');
+});
+
+test('a spare row does not keep the previous month\'s hours', function () {
+    logEntry('2026-08-31T09:00:00+00:00', '2026-08-31T17:00:00+00:00', 'P', 'Last of August');
+
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-09']))));
+
+    /** August's 31st filled row 41, which September must leave empty. */
+    expect($cells)->not->toHaveKey('B41')
+        ->and($cells)->not->toHaveKey('E41')
+        ->and($cells)->not->toHaveKey('K41');
+});
+
+test('the download month must be well formed', function () {
+    $this->get(route('attendance.download', ['month' => 'July 2026']))
+        ->assertSessionHasErrors('month');
+});
+
+test('the download falls back to the current month', function () {
+    $this->get(route('attendance.download'))
+        ->assertOk()
+        ->assertDownload('timesheet-'.now()->format('Y-m').'.xlsx');
+});
+
 test('the download leaves days without attendance empty', function () {
-    $cells = cells(downloaded($this->withSession(['attendance.entries' => [[
-        'id' => 'entry-1',
-        'clockedInAt' => '2026-08-05T09:12:00+00:00',
-        'clockedOutAt' => '2026-08-05T17:03:00+00:00',
-        'description' => 'Sprint planning',
-    ]]])->get(route('attendance.download'))));
+    logEntry('2026-08-05T09:12:00+00:00', '2026-08-05T17:03:00+00:00', 'P', 'Sprint planning');
+
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
 
     expect($cells)->not->toHaveKey('B16')
         ->and($cells)->not->toHaveKey('E16');
 });
 
 test('the download merges several clock ins on one day into a single row', function () {
-    $cells = cells(downloaded($this->withSession(['attendance.entries' => [
-        [
-            'id' => 'entry-1',
-            'clockedInAt' => '2026-08-05T13:00:00+00:00',
-            'clockedOutAt' => '2026-08-05T17:00:00+00:00',
-            'description' => 'Afternoon',
-        ],
-        [
-            'id' => 'entry-2',
-            'clockedInAt' => '2026-08-05T09:00:00+00:00',
-            'clockedOutAt' => '2026-08-05T12:00:00+00:00',
-            'description' => 'Morning',
-        ],
-    ]])->get(route('attendance.download'))));
+    logEntry('2026-08-05T13:00:00+00:00', '2026-08-05T17:00:00+00:00', 'P', 'Afternoon');
+    logEntry('2026-08-05T09:00:00+00:00', '2026-08-05T12:00:00+00:00', 'P', 'Morning');
+
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
 
     expect(round((float) $cells['B15'] * 24))->toBe(9.0)
         ->and(round((float) $cells['C15'] * 24))->toBe(17.0)
@@ -382,25 +578,22 @@ test('the download merges several clock ins on one day into a single row', funct
 });
 
 test('a downloaded template can be uploaded again', function () {
-    $entries = [[
-        'id' => 'entry-1',
-        'clockedInAt' => '2026-08-05T09:12:00+00:00',
-        'clockedOutAt' => '2026-08-05T17:03:00+00:00',
-        'description' => 'Sprint planning',
-    ]];
+    logEntry('2026-08-05T09:12:00+00:00', '2026-08-05T17:03:00+00:00', 'P', 'Sprint planning');
 
-    $workbook = downloaded($this->withSession(['attendance.entries' => $entries])
-        ->get(route('attendance.download')));
+    $original = storedEntries();
+
+    $workbook = downloaded($this->get(route('attendance.download', ['month' => '2026-08'])));
 
     $this->post(route('attendance.upload'), [
         'file' => UploadedFile::fake()->createWithContent('timesheet.xlsx', $workbook),
-    ])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', fn (array $uploaded) => count($uploaded) === 1
-            && $uploaded[0]['clockedInAt'] === $entries[0]['clockedInAt']
-            && $uploaded[0]['clockedOutAt'] === $entries[0]['clockedOutAt']
-            && $uploaded[0]['description'] === $entries[0]['description']
-        );
+    ])->assertRedirect(route('attendance.index'));
+
+    $uploaded = storedEntries();
+
+    expect($uploaded)->toHaveCount(1)
+        ->and($uploaded[0]['clockedInAt'])->toBe($original[0]['clockedInAt'])
+        ->and($uploaded[0]['clockedOutAt'])->toBe($original[0]['clockedOutAt'])
+        ->and($uploaded[0]['description'])->toBe($original[0]['description']);
 });
 
 function timesheet(string $body): File
@@ -409,50 +602,66 @@ function timesheet(string $body): File
 }
 
 test('uploading a timesheet replaces the stored entries', function () {
-    $this->withSession(['attendance.entries' => openAttendanceEntry()])
-        ->post(route('attendance.upload'), [
-            'file' => timesheet(<<<'CSV'
-                Date,"Clock In","Clock Out",Duration,Description
-                2026-08-04,08:58,16:45,07:47,"Bug triage"
-                2026-08-05,09:12,17:03,07:51,"Sprint planning"
-                Total,,,15:38,
-                CSV),
-        ])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', function (array $entries) {
-            return count($entries) === 2
-                && $entries[0]['description'] === 'Sprint planning'
-                && str_starts_with($entries[0]['clockedInAt'], '2026-08-05T09:12:00')
-                && str_starts_with($entries[0]['clockedOutAt'], '2026-08-05T17:03:00')
-                && $entries[1]['description'] === 'Bug triage';
-        });
+    openAttendanceEntry();
+
+    $this->post(route('attendance.upload'), [
+        'file' => timesheet(<<<'CSV'
+            Date,"Clock In","Clock Out",Duration,Description
+            2026-08-04,08:58,16:45,07:47,"Bug triage"
+            2026-08-05,09:12,17:03,07:51,"Sprint planning"
+            Total,,,15:38,
+            CSV),
+    ])->assertRedirect(route('attendance.index'));
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(2)
+        ->and($entries[0]['description'])->toBe('Sprint planning')
+        ->and($entries[0]['clockedInAt'])->toStartWith('2026-08-05T09:12:00')
+        ->and($entries[0]['clockedOutAt'])->toStartWith('2026-08-05T17:03:00')
+        ->and($entries[1]['description'])->toBe('Bug triage');
 });
 
 test('uploading keeps a row without a clock out time open', function () {
     $this->post(route('attendance.upload'), [
         'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,09:12,,,Still going"),
-    ])
-        ->assertRedirect(route('attendance.index'))
-        ->assertSessionHas('attendance.entries', fn (array $entries) => count($entries) === 1
-            && $entries[0]['clockedOutAt'] === null
-        );
+    ])->assertRedirect(route('attendance.index'));
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['clockedOutAt'])->toBeNull();
 });
 
 test('uploading treats an earlier clock out as an overnight shift', function () {
     $this->post(route('attendance.upload'), [
         'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,22:00,06:00,08:00,Night shift"),
-    ])->assertSessionHas('attendance.entries', fn (array $entries) => str_starts_with($entries[0]['clockedOutAt'], '2026-08-06T06:00:00'));
+    ]);
+
+    expect(storedEntries()[0]['clockedOutAt'])->toStartWith('2026-08-06T06:00:00');
+});
+
+test('an upload only replaces the signed in user\'s log', function () {
+    $other = Attendance::factory()->for(User::factory())->create();
+
+    $this->post(route('attendance.upload'), [
+        'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,09:12,17:03,07:51,\"Sprint planning\""),
+    ])->assertRedirect(route('attendance.index'));
+
+    expect(Attendance::whereKey($other->id)->exists())->toBeTrue();
 });
 
 test('a csv timesheet still uploads alongside the template', function () {
     $csv = "Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,09:12,17:03,07:51,\"Sprint planning\"\nTotal,,,07:51,";
 
-    $this->post(route('attendance.upload'), ['file' => timesheet($csv)])
-        ->assertSessionHas('attendance.entries', fn (array $uploaded) => count($uploaded) === 1
-            && str_starts_with($uploaded[0]['clockedInAt'], '2026-08-05T09:12:00')
-            && str_starts_with($uploaded[0]['clockedOutAt'], '2026-08-05T17:03:00')
-            && $uploaded[0]['description'] === 'Sprint planning'
-        );
+    $this->post(route('attendance.upload'), ['file' => timesheet($csv)]);
+
+    $uploaded = storedEntries();
+
+    expect($uploaded)->toHaveCount(1)
+        ->and($uploaded[0]['clockedInAt'])->toStartWith('2026-08-05T09:12:00')
+        ->and($uploaded[0]['clockedOutAt'])->toStartWith('2026-08-05T17:03:00')
+        ->and($uploaded[0]['description'])->toBe('Sprint planning');
 });
 
 test('uploading rejects a malformed time', function () {

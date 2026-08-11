@@ -34,6 +34,11 @@ function formatDate(isoDate: string): string {
     });
 }
 
+/** The month input speaks 'YYYY-MM', which is what the download route validates. */
+function monthOf(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
 function formatDuration(milliseconds: number): string {
     const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
 
@@ -63,6 +68,10 @@ function entryDuration(entry: AttendanceEntry, now: number): number {
 export default function Attendance({ entries, activeEntry }: AttendanceProps) {
     const { auth } = usePage<{ auth: Auth }>().props;
     const [now, setNow] = useState(() => Date.now());
+    /** Entries arrive newest first, so the latest day is the month worth offering. */
+    const [downloadMonth, setDownloadMonth] = useState(() =>
+        monthOf(entries[0] ? new Date(entries[0].clockedInAt) : new Date()),
+    );
     const fileInput = useRef<HTMLInputElement>(null);
     const { data, setData, transform, submit, processing, errors, reset } =
         useForm({
@@ -281,13 +290,30 @@ export default function Attendance({ entries, activeEntry }: AttendanceProps) {
                                             : 'Upload timesheet'}
                                     </button>
                                     {entries.length > 0 && (
-                                        <a
-                                            href={download.url()}
-                                            download
-                                            className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
-                                        >
-                                            Download timesheet
-                                        </a>
+                                        <>
+                                            <input
+                                                type="month"
+                                                value={downloadMonth}
+                                                onChange={(event) =>
+                                                    setDownloadMonth(
+                                                        event.target.value,
+                                                    )
+                                                }
+                                                aria-label="Timesheet month"
+                                                className="rounded-sm border border-[#e3e3e0] bg-transparent px-2 py-1 text-sm dark:border-[#3E3E3A]"
+                                            />
+                                            <a
+                                                href={download.url({
+                                                    query: {
+                                                        month: downloadMonth,
+                                                    },
+                                                })}
+                                                download
+                                                className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
+                                            >
+                                                Download timesheet
+                                            </a>
+                                        </>
                                     )}
                                 </div>
                             </div>
