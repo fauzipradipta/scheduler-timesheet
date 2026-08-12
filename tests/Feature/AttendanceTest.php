@@ -472,6 +472,25 @@ test('the download fills the template row that matches the day', function () {
         ->and($cells['K15'])->toBe('Sprint planning');
 });
 
+test('the signature dates carry the day the sheet was taken', function () {
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    $today = 'DATE: '.now()->format('d/m/Y');
+
+    expect($cells['B55'])->toBe($today)
+        ->and($cells['F55'])->toBe($today)
+        ->and($cells['J55'])->toBe($today);
+});
+
+test('the signature date follows the download, not the month covered', function () {
+    $this->travelTo(Carbon::parse('2026-09-15'));
+
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-07']))));
+
+    /** A July sheet taken in September is still signed in September. */
+    expect($cells['B55'])->toBe('DATE: 15/09/2026');
+});
+
 test('the download keeps the template header and signature block', function () {
     $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
 

@@ -74,6 +74,13 @@ class AttendanceController extends Controller
     private const PERIOD_CELL = 'B8';
 
     /**
+     * The signature block's date lines, which the template writes as plain text.
+     *
+     * @var list<string>
+     */
+    private const SIGNATURE_DATE_CELLS = ['B55', 'F55', 'J55'];
+
+    /**
      * The light grey the template already paints its weekends with.
      */
     private const WEEKEND_FILL = 4;
@@ -306,6 +313,11 @@ class AttendanceController extends Controller
 
         /** The template writes its own period heading from a date serial. */
         $this->setNumber($document, $xpath, self::PERIOD_CELL, $this->serialFromDate($month));
+
+        /** A sheet is signed on the day it is taken, whichever month it covers. */
+        foreach (self::SIGNATURE_DATE_CELLS as $reference) {
+            $this->setText($document, $xpath, $reference, 'DATE: '.now()->format('d/m/Y'));
+        }
 
         $daysInMonth = $month->daysInMonth;
 

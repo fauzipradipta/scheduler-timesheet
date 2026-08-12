@@ -1,7 +1,7 @@
 import { queryParams, type RouteQueryOptions, type RouteDefinition, type RouteFormDefinition, applyUrlDefaults } from './../../../wayfinder'
 /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:141
+ * @see app/Http/Controllers/AttendanceController.php:148
  * @route '/attendance/entry'
  */
 export const store = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
@@ -16,7 +16,7 @@ store.definition = {
 
 /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:141
+ * @see app/Http/Controllers/AttendanceController.php:148
  * @route '/attendance/entry'
  */
 store.url = (options?: RouteQueryOptions) => {
@@ -25,7 +25,7 @@ store.url = (options?: RouteQueryOptions) => {
 
 /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:141
+ * @see app/Http/Controllers/AttendanceController.php:148
  * @route '/attendance/entry'
  */
 store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
@@ -35,7 +35,7 @@ store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
 
     /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:141
+ * @see app/Http/Controllers/AttendanceController.php:148
  * @route '/attendance/entry'
  */
     const storeForm = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
@@ -45,7 +45,7 @@ store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
 
             /**
 * @see \App\Http\Controllers\AttendanceController::store
- * @see app/Http/Controllers/AttendanceController.php:141
+ * @see app/Http/Controllers/AttendanceController.php:148
  * @route '/attendance/entry'
  */
         storeForm.post = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
@@ -56,7 +56,7 @@ store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
     store.form = storeForm
 /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:187
+ * @see app/Http/Controllers/AttendanceController.php:194
  * @route '/attendance/entry/{entry}'
  */
 export const destroy = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteDefinition<'delete'> => ({
@@ -71,7 +71,7 @@ destroy.definition = {
 
 /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:187
+ * @see app/Http/Controllers/AttendanceController.php:194
  * @route '/attendance/entry/{entry}'
  */
 destroy.url = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions) => {
@@ -99,7 +99,7 @@ destroy.url = (args: { entry: string | number } | [entry: string | number ] | st
 
 /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:187
+ * @see app/Http/Controllers/AttendanceController.php:194
  * @route '/attendance/entry/{entry}'
  */
 destroy.delete = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteDefinition<'delete'> => ({
@@ -109,7 +109,7 @@ destroy.delete = (args: { entry: string | number } | [entry: string | number ] |
 
     /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:187
+ * @see app/Http/Controllers/AttendanceController.php:194
  * @route '/attendance/entry/{entry}'
  */
     const destroyForm = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
@@ -124,7 +124,7 @@ destroy.delete = (args: { entry: string | number } | [entry: string | number ] |
 
             /**
 * @see \App\Http\Controllers\AttendanceController::destroy
- * @see app/Http/Controllers/AttendanceController.php:187
+ * @see app/Http/Controllers/AttendanceController.php:194
  * @route '/attendance/entry/{entry}'
  */
         destroyForm.delete = (args: { entry: string | number } | [entry: string | number ] | string | number, options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
