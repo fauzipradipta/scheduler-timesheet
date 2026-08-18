@@ -1,7 +1,9 @@
-import { useForm } from '@inertiajs/react';
+import { useForm, useHttp } from '@inertiajs/react';
 import type { SyntheticEvent } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { holidays as holidayRoute } from '@/routes/attendance';
 import { destroy, store } from '@/routes/attendance/entry';
+import type { Holiday, Holidays } from '@/types';
 
 export type AttendanceEntry = {
     id: string;
@@ -13,6 +15,8 @@ export type AttendanceEntry = {
 
 type AttendanceCalendarProps = {
     entries: AttendanceEntry[];
+    holidays: Holidays;
+    holidayYear: number;
 };
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -47,6 +51,24 @@ function toIsoDay(date: Date): string {
         String(date.getMonth() + 1).padStart(2, '0'),
         String(date.getDate()).padStart(2, '0'),
     ].join('-');
+}
+
+/**
+ * A day off takes the same grey the timesheet template paints its weekends
+ * with, deepened for a national holiday so joint leave still reads apart.
+ */
+function shadeOf(holiday: Holiday | undefined, weekend: boolean): string {
+    if (holiday) {
+        return holiday.joint
+            ? 'bg-[#e7e7e4] dark:bg-[#2a2a28]'
+            : 'bg-[#d6d6d1] dark:bg-[#3a3a37]';
+    }
+
+    return weekend ? 'bg-[#f4f4f2] dark:bg-[#1f1f1e]' : '';
+}
+
+function isWeekend(date: Date): boolean {
+    return date.getDay() === 0 || date.getDay() === 6;
 }
 
 function durationOf(item: AttendanceEntry): number {
@@ -90,6 +112,8 @@ function gridOf(month: Date): (Date | null)[] {
 
 export default function AttendanceCalendar({
     entries,
+    holidays,
+    holidayYear,
 }: AttendanceCalendarProps) {
     const [month, setMonth] = useState(() => {
         const today = new Date();
@@ -119,7 +143,38 @@ export default function AttendanceCalendar({
 
     const removal = useForm({});
 
+    /**
+     * The page loads with its own year, and the rest are pulled once each as
+     * the calendar is paged into them.
+     */
+    const [byYear, setByYear] = useState<Record<number, Holidays>>(() => ({
+        [holidayYear]: holidays,
+    }));
+    const asked = useRef(new Set<number>([holidayYear]));
+    const holidayRequest = useHttp<Record<string, never>, Holidays>({});
+    const { get: fetchHolidays } = holidayRequest;
+    const year = month.getFullYear();
+
+    useEffect(() => {
+        if (asked.current.has(year)) {
+            return;
+        }
+
+        asked.current.add(year);
+
+        fetchHolidays(holidayRoute.url({ query: { year } }), {
+            /** A year the feed cannot answer for simply has no days off. */
+            onSuccess: (answered) =>
+                setByYear((current) => ({ ...current, [year]: answered })),
+        });
+    }, [fetchHolidays, year]);
+
+    const daysOff = byYear[year] ?? {};
+
     const selectedEntries = selected ? (byDay.get(selected) ?? []) : [];
+    const selectedHoliday = selected
+        ? (byYear[Number(selected.slice(0, 4))] ?? {})[selected]
+        : undefined;
 
     const handleSelect = (day: string) => {
         setSelected(day);
@@ -163,7 +218,9 @@ export default function AttendanceCalendar({
                     >
                         ‹
                     </button>
-                    <span className="min-w-[9rem] text-center text-sm">
+                    <span
+                        className={`min-w-[9rem] text-center text-sm ${holidayRequest.processing ? 'animate-pulse' : ''}`}
+                    >
                         {monthLabel}
                     </span>
                     <button
@@ -202,25 +259,30 @@ export default function AttendanceCalendar({
 
                     const day = toIsoDay(date);
                     const logged = byDay.get(day) ?? [];
+                    const holiday = daysOff[day];
                     const total = logged.reduce(
                         (sum, item) => sum + durationOf(item),
                         0,
                     );
+
+                    /** A day off stays grey even when it was worked. */
+                    const shade =
+                        shadeOf(holiday, isWeekend(date)) ||
+                        (logged.length > 0
+                            ? 'bg-emerald-50 dark:bg-emerald-950/40'
+                            : '');
 
                     return (
                         <button
                             key={day}
                             type="button"
                             onClick={() => handleSelect(day)}
+                            title={holiday?.name}
                             className={`flex min-h-[3.5rem] flex-col items-start rounded-sm border p-1.5 text-left text-sm transition ${
                                 selected === day
                                     ? 'border-[#1b1b18] dark:border-[#EDEDEC]'
                                     : 'border-[#e3e3e0] hover:border-[#a3a29e] dark:border-[#3E3E3A] dark:hover:border-[#706f6c]'
-                            } ${
-                                logged.length > 0
-                                    ? 'bg-emerald-50 dark:bg-emerald-950/40'
-                                    : ''
-                            }`}
+                            } ${shade}`}
                         >
                             <span className="flex w-full items-baseline justify-between gap-1">
                                 <span className="tabular-nums">
@@ -238,6 +300,11 @@ export default function AttendanceCalendar({
                                     </span>
                                 )}
                             </span>
+                            {holiday && (
+                                <span className="mt-0.5 line-clamp-2 text-[0.6rem] leading-tight text-[#706f6c] dark:text-[#A1A09A]">
+                                    {holiday.name}
+                                </span>
+                            )}
                             {total > 0 && (
                                 <span className="mt-auto font-mono text-[0.65rem] text-emerald-700 tabular-nums dark:text-emerald-300">
                                     {formatHours(total)}
@@ -247,6 +314,22 @@ export default function AttendanceCalendar({
                     );
                 })}
             </div>
+
+            <ul className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.7rem] text-[#706f6c] dark:text-[#A1A09A]">
+                {[
+                    ['bg-[#d6d6d1] dark:bg-[#3a3a37]', 'Libur nasional'],
+                    ['bg-[#e7e7e4] dark:bg-[#2a2a28]', 'Cuti bersama'],
+                    ['bg-[#f4f4f2] dark:bg-[#1f1f1e]', 'Weekend'],
+                ].map(([swatch, label]) => (
+                    <li key={label} className="flex items-center gap-1.5">
+                        <span
+                            aria-hidden="true"
+                            className={`inline-block size-3 rounded-xs border border-[#e3e3e0] dark:border-[#3E3E3A] ${swatch}`}
+                        />
+                        {label}
+                    </li>
+                ))}
+            </ul>
 
             {selected && (
                 <div className="mt-6 border-t border-[#e3e3e0] pt-4 dark:border-[#3E3E3A]">
@@ -261,6 +344,14 @@ export default function AttendanceCalendar({
                             },
                         )}
                     </h3>
+
+                    {selectedHoliday && (
+                        <p className="mt-1 text-sm text-[#706f6c] dark:text-[#A1A09A]">
+                            {selectedHoliday.name}
+                            {selectedHoliday.joint && ' · cuti bersama'}
+                            {selectedHoliday.tentative && ' · tanggal belum pasti'}
+                        </p>
+                    )}
 
                     {selectedEntries.length > 0 && (
                         <ul className="mt-3 flex flex-col divide-y divide-[#e3e3e0] dark:divide-[#3E3E3A]">

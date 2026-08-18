@@ -5,6 +5,7 @@ use App\Models\User;
 use Illuminate\Http\Testing\File;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
 
 /** The attendance routes now sit behind the auth middleware. */
@@ -12,7 +13,24 @@ beforeEach(function () {
     $this->user = User::factory()->create();
 
     $this->actingAs($this->user);
+
+    /** The days off are read from Google, which the suite must never call. */
+    Http::preventStrayRequests();
+
+    fakeHolidayFeed();
 });
+
+/**
+ * Answer the holiday feed with the 2026 calendar the fixture holds.
+ */
+function fakeHolidayFeed(): void
+{
+    Http::fake([
+        'calendar.google.com/*' => Http::response(
+            (string) file_get_contents(base_path('tests/Fixtures/holidays.ics')),
+        ),
+    ]);
+}
 
 /**
  * Put a day in the signed in user's log.
@@ -410,11 +428,107 @@ test('the shading follows the month rather than the template', function () {
 });
 
 test('a weekday the template shaded by hand is repainted plain', function () {
-    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-09']))));
 
-    /** The template painted rows 27 and 35 grey though both are weekdays. */
+    /**
+     * The template painted rows 27 and 35 grey though both are weekdays, and
+     * September is the month that carries no Indonesian holiday of its own.
+     */
     expect($painted['B27'])->toBe(0)
         ->and($painted['B35'])->toBe(0);
+});
+
+test('a national holiday is shaded like a weekend', function () {
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    /** Independence Day is the 17th and Maulid the 25th, both weekdays. */
+    expect($painted['B27'])->toBe(4)
+        ->and($painted['B35'])->toBe(4)
+        ->and($painted['B28'])->toBe(0);
+});
+
+test('a cuti bersama is shaded like the holiday it bridges', function () {
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-12']))));
+
+    /** Christmas eve is joint leave, and Christmas itself a holiday. */
+    expect($painted['B34'])->toBe(4)
+        ->and($painted['B35'])->toBe(4);
+});
+
+test('a day the feed only marks as celebrated is still a working day', function () {
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-12']))));
+
+    /** New year's eve is an observance in the feed, not a day off. */
+    expect($painted['B41'])->toBe(0);
+});
+
+test('a holiday nobody worked names itself in the remark column', function () {
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    expect($cells['K27'])->toBe('Hari Proklamasi Kemerdekaan R.I.');
+});
+
+test('a remark written for a holiday outranks the holiday name', function () {
+    logEntry('2026-08-17T09:00:00+00:00', '2026-08-17T17:00:00+00:00', 'P', 'Manned the stand');
+
+    $cells = cells(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    expect($cells['K27'])->toBe('Manned the stand');
+});
+
+test('the attendance page carries the days off of the current year', function () {
+    $this->get(route('attendance.index'))
+        ->assertOk()
+        ->assertInertia(fn ($page) => $page
+            ->component('attendance')
+            ->where('holidayYear', (int) now()->year)
+            ->has('holidays')
+        );
+});
+
+test('the holiday endpoint answers for the year it is asked about', function () {
+    $this->getJson(route('attendance.holidays', ['year' => 2026]))
+        ->assertOk()
+        ->assertJsonPath('2026-03-21.name', 'Hari Idul Fitri')
+        ->assertJsonPath('2026-03-21.joint', false)
+        ->assertJsonPath('2026-03-20.name', 'Cuti Bersama Idul Fitri')
+        ->assertJsonPath('2026-03-20.joint', true)
+        ->assertJsonMissingPath('2026-02-19');
+});
+
+test('an unconfirmed date keeps its name and says it is unconfirmed', function () {
+    $this->getJson(route('attendance.holidays', ['year' => 2026]))
+        ->assertOk()
+        ->assertJsonPath('2026-05-31.name', 'Hari Raya Waisak')
+        ->assertJsonPath('2026-05-31.tentative', true);
+});
+
+test('the holiday endpoint answers nothing for a year the feed omits', function () {
+    $this->getJson(route('attendance.holidays', ['year' => 2019]))
+        ->assertOk()
+        ->assertExactJson([]);
+});
+
+test('the holiday endpoint needs a year it can read', function () {
+    $this->getJson(route('attendance.holidays', ['year' => 'lastyear']))
+        ->assertStatus(422);
+});
+
+test('a feed that is down leaves the calendar without days off', function () {
+    Http::fake(['calendar.google.com/*' => Http::response('', 503)]);
+
+    $this->get(route('attendance.index'))
+        ->assertOk()
+        ->assertInertia(fn ($page) => $page->where('holidays', []));
+});
+
+test('a feed that is down still downloads a weekend shaded sheet', function () {
+    Http::fake(['calendar.google.com/*' => Http::response('', 503)]);
+
+    $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
+
+    expect($painted['B11'])->toBe(4)
+        ->and($painted['B27'])->toBe(0);
 });
 
 test('shading reuses cell formats rather than cloning one per cell', function () {

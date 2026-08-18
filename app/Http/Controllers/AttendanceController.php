@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Attendance;
+use App\Support\HolidayCalendar;
 use Carbon\Exceptions\InvalidFormatException;
 use DOMDocument;
 use DOMElement;
 use DOMXPath;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -22,6 +24,8 @@ use ZipArchive;
 
 /**
  * @phpstan-type Entry array{id: string, clockedInAt: string, clockedOutAt: string|null, status: string, description: string}
+ *
+ * @phpstan-import-type Holiday from HolidayCalendar
  */
 class AttendanceController extends Controller
 {
@@ -112,14 +116,32 @@ class AttendanceController extends Controller
 
     private const SPREADSHEET_NAMESPACE = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 
-    public function index(Request $request): Response
+    public function index(Request $request, HolidayCalendar $calendar): Response
     {
         $entries = $this->entries($request);
+        $year = (int) now()->year;
 
         return Inertia::render('attendance', [
             'entries' => $entries,
             'activeEntry' => $this->activeEntry($entries),
+            'holidays' => $calendar->forYear($year),
+            'holidayYear' => $year,
         ]);
+    }
+
+    /**
+     * The days off of one year, which the calendar pulls as it is paged past
+     * the year the page was loaded with.
+     *
+     * @throws ValidationException
+     */
+    public function holidays(Request $request, HolidayCalendar $calendar): JsonResponse
+    {
+        $validated = $request->validate([
+            'year' => ['required', 'integer', 'min:1970', 'max:2200'],
+        ]);
+
+        return response()->json($calendar->forYear((int) $validated['year']));
     }
 
     public function store(Request $request): RedirectResponse
@@ -201,7 +223,7 @@ class AttendanceController extends Controller
     /**
      * Hand back a copy of the timesheet template with the attendance columns filled in.
      */
-    public function download(Request $request): BinaryFileResponse
+    public function download(Request $request, HolidayCalendar $calendar): BinaryFileResponse
     {
         $validated = $request->validate([
             'month' => ['nullable', 'date_format:Y-m'],
@@ -209,7 +231,7 @@ class AttendanceController extends Controller
 
         $month = Carbon::createFromFormat('Y-m', $validated['month'] ?? now()->format('Y-m'))->startOfMonth();
 
-        $path = $this->fill($this->entries($request), $month);
+        $path = $this->fill($this->entries($request), $month, $calendar->forYear((int) $month->year));
 
         return response()
             ->download($path, 'timesheet-'.$month->format('Y-m').'.xlsx')
@@ -265,9 +287,10 @@ class AttendanceController extends Controller
      * empty cells the template author laid out.
      *
      * @param  list<Entry>  $entries
+     * @param  array<string, Holiday>  $holidays
      * @return string the path of the filled copy
      */
-    private function fill(array $entries, Carbon $month): string
+    private function fill(array $entries, Carbon $month, array $holidays): string
     {
         $template = resource_path('templates/timesheet.xlsx');
 
@@ -333,18 +356,31 @@ class AttendanceController extends Controller
             }
 
             $date = $month->copy()->setDay($dayOfMonth);
+            $key = $date->format('Y-m-d');
+            $holiday = $holidays[$key] ?? null;
 
             $this->setNumber($document, $xpath, self::DATE_COLUMN.$row, $this->serialFromDate($date));
 
             /**
              * The template's own shading was painted for the month it shipped with,
-             * so every row is repainted from the requested month's calendar.
+             * so every row is repainted from the requested month's calendar. A
+             * holiday is a day off like a weekend, so it takes the same grey.
              */
-            $this->shadeRow($xpath, $cellXfs, $row, $date->isWeekend() ? self::WEEKEND_FILL : self::PLAIN_FILL);
+            $this->shadeRow(
+                $xpath,
+                $cellXfs,
+                $row,
+                $date->isWeekend() || $holiday !== null ? self::WEEKEND_FILL : self::PLAIN_FILL,
+            );
 
-            $day = $byDate[$date->format('Y-m-d')] ?? [];
+            $day = $byDate[$key] ?? [];
 
             if ($day === []) {
+                /** A day nobody worked can still say why it was off. */
+                if ($holiday !== null) {
+                    $this->setText($document, $xpath, self::REMARK_COLUMN.$row, $holiday['name']);
+                }
+
                 continue;
             }
 

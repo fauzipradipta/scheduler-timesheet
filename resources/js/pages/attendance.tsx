@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { destroy as logout } from '@/actions/App/Http/Controllers/Auth/AuthenticatedSessionController';
 import AttendanceCalendar from '@/components/attendance-calendar';
 import { download, store, upload } from '@/routes/attendance';
-import type { Auth } from '@/types';
+import type { Auth, Holidays } from '@/types';
 
 type AttendanceEntry = {
     id: string;
@@ -17,6 +17,8 @@ type AttendanceEntry = {
 type AttendanceProps = {
     entries: AttendanceEntry[];
     activeEntry: AttendanceEntry | null;
+    holidays: Holidays;
+    holidayYear: number;
 };
 
 function formatTime(isoDate: string): string {
@@ -65,7 +67,12 @@ function entryDuration(entry: AttendanceEntry, now: number): number {
     return clockedOutAt - clockedInAt;
 }
 
-export default function Attendance({ entries, activeEntry }: AttendanceProps) {
+export default function Attendance({
+    entries,
+    activeEntry,
+    holidays,
+    holidayYear,
+}: AttendanceProps) {
     const { auth } = usePage<{ auth: Auth }>().props;
     const [now, setNow] = useState(() => Date.now());
     /** Entries arrive newest first, so the latest day is the month worth offering. */
@@ -253,7 +260,11 @@ export default function Attendance({ entries, activeEntry }: AttendanceProps) {
                         </form>
                     </section>
 
-                    <AttendanceCalendar entries={entries} />
+                    <AttendanceCalendar
+                        entries={entries}
+                        holidays={holidays}
+                        holidayYear={holidayYear}
+                    />
 
                     <section className="rounded-lg bg-white p-6 shadow-[inset_0px_0px_0px_1px_rgba(26,26,0,0.16)] dark:bg-[#161615] dark:shadow-[inset_0px_0px_0px_1px_#fffaed2d]">
                         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">

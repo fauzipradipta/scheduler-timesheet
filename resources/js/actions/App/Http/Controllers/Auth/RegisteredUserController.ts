@@ -1,4 +1,4 @@
-import { queryParams, type RouteQueryOptions, type RouteDefinition, type RouteFormDefinition } from './../../../../../wayfinder'
+import { queryParams, type RouteQueryOptions, type RouteDefinition } from './../../../../../wayfinder'
 /**
 * @see \App\Http\Controllers\Auth\RegisteredUserController::create
  * @see app/Http/Controllers/Auth/RegisteredUserController.php:17
@@ -42,41 +42,6 @@ create.head = (options?: RouteQueryOptions): RouteDefinition<'head'> => ({
     method: 'head',
 })
 
-    /**
-* @see \App\Http\Controllers\Auth\RegisteredUserController::create
- * @see app/Http/Controllers/Auth/RegisteredUserController.php:17
- * @route '/register'
- */
-    const createForm = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
-        action: create.url(options),
-        method: 'get',
-    })
-
-            /**
-* @see \App\Http\Controllers\Auth\RegisteredUserController::create
- * @see app/Http/Controllers/Auth/RegisteredUserController.php:17
- * @route '/register'
- */
-        createForm.get = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
-            action: create.url(options),
-            method: 'get',
-        })
-            /**
-* @see \App\Http\Controllers\Auth\RegisteredUserController::create
- * @see app/Http/Controllers/Auth/RegisteredUserController.php:17
- * @route '/register'
- */
-        createForm.head = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
-            action: create.url({
-                        [options?.mergeQuery ? 'mergeQuery' : 'query']: {
-                            _method: 'HEAD',
-                            ...(options?.query ?? options?.mergeQuery ?? {}),
-                        }
-                    }),
-            method: 'get',
-        })
-    
-    create.form = createForm
 /**
 * @see \App\Http\Controllers\Auth\RegisteredUserController::store
  * @see app/Http/Controllers/Auth/RegisteredUserController.php:25
@@ -110,28 +75,6 @@ store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
     url: store.url(options),
     method: 'post',
 })
-
-    /**
-* @see \App\Http\Controllers\Auth\RegisteredUserController::store
- * @see app/Http/Controllers/Auth/RegisteredUserController.php:25
- * @route '/register'
- */
-    const storeForm = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
-        action: store.url(options),
-        method: 'post',
-    })
-
-            /**
-* @see \App\Http\Controllers\Auth\RegisteredUserController::store
- * @see app/Http/Controllers/Auth/RegisteredUserController.php:25
- * @route '/register'
- */
-        storeForm.post = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
-            action: store.url(options),
-            method: 'post',
-        })
-    
-    store.form = storeForm
 const RegisteredUserController = { create, store }
 
 export default RegisteredUserController
