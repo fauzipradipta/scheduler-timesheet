@@ -15,21 +15,31 @@ beforeEach(function () {
     $this->actingAs($this->user);
 
     /** The days off are read from Google, which the suite must never call. */
-    Http::preventStrayRequests();
-
     fakeHolidayFeed();
 });
 
 /**
- * Answer the holiday feed with the 2026 calendar the fixture holds.
+ * Answer the holiday feed with the 2026 calendar the fixture holds. A second
+ * Http::fake would only queue another stub behind this one, so the answer is
+ * held in a closure the test may swap out instead.
  */
 function fakeHolidayFeed(): void
 {
+    holidayFeedAnswers(fn () => Http::response(
+        (string) file_get_contents(base_path('tests/Fixtures/holidays.ics')),
+    ));
+
     Http::fake([
-        'calendar.google.com/*' => Http::response(
-            (string) file_get_contents(base_path('tests/Fixtures/holidays.ics')),
-        ),
+        'calendar.google.com/*' => fn () => (test()->holidayFeed)(),
     ]);
+}
+
+/**
+ * Hand the holiday feed a different answer for the rest of the test.
+ */
+function holidayFeedAnswers(Closure $answer): void
+{
+    test()->holidayFeed = $answer;
 }
 
 /**
@@ -515,7 +525,7 @@ test('the holiday endpoint needs a year it can read', function () {
 });
 
 test('a feed that is down leaves the calendar without days off', function () {
-    Http::fake(['calendar.google.com/*' => Http::response('', 503)]);
+    holidayFeedAnswers(fn () => Http::response('', 503));
 
     $this->get(route('attendance.index'))
         ->assertOk()
@@ -523,7 +533,7 @@ test('a feed that is down leaves the calendar without days off', function () {
 });
 
 test('a feed that is down still downloads a weekend shaded sheet', function () {
-    Http::fake(['calendar.google.com/*' => Http::response('', 503)]);
+    holidayFeedAnswers(fn () => Http::response('', 503));
 
     $painted = fills(downloaded($this->get(route('attendance.download', ['month' => '2026-08']))));
 

@@ -349,7 +349,8 @@ export default function AttendanceCalendar({
                         <p className="mt-1 text-sm text-[#706f6c] dark:text-[#A1A09A]">
                             {selectedHoliday.name}
                             {selectedHoliday.joint && ' · cuti bersama'}
-                            {selectedHoliday.tentative && ' · tanggal belum pasti'}
+                            {selectedHoliday.tentative &&
+                                ' · tanggal belum pasti'}
                         </p>
                     )}
 

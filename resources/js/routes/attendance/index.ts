@@ -1,4 +1,4 @@
-import { queryParams, type RouteQueryOptions, type RouteDefinition } from './../../wayfinder'
+import { queryParams, type RouteQueryOptions, type RouteDefinition, type RouteFormDefinition } from './../../wayfinder'
 import entry from './entry'
 /**
 * @see \App\Http\Controllers\AttendanceController::index
@@ -43,6 +43,41 @@ index.head = (options?: RouteQueryOptions): RouteDefinition<'head'> => ({
     method: 'head',
 })
 
+    /**
+* @see \App\Http\Controllers\AttendanceController::index
+ * @see app/Http/Controllers/AttendanceController.php:119
+ * @route '/attendance'
+ */
+    const indexForm = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+        action: index.url(options),
+        method: 'get',
+    })
+
+            /**
+* @see \App\Http\Controllers\AttendanceController::index
+ * @see app/Http/Controllers/AttendanceController.php:119
+ * @route '/attendance'
+ */
+        indexForm.get = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+            action: index.url(options),
+            method: 'get',
+        })
+            /**
+* @see \App\Http\Controllers\AttendanceController::index
+ * @see app/Http/Controllers/AttendanceController.php:119
+ * @route '/attendance'
+ */
+        indexForm.head = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+            action: index.url({
+                        [options?.mergeQuery ? 'mergeQuery' : 'query']: {
+                            _method: 'HEAD',
+                            ...(options?.query ?? options?.mergeQuery ?? {}),
+                        }
+                    }),
+            method: 'get',
+        })
+    
+    index.form = indexForm
 /**
 * @see \App\Http\Controllers\AttendanceController::store
  * @see app/Http/Controllers/AttendanceController.php:147
@@ -77,6 +112,27 @@ store.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
     method: 'post',
 })
 
+    /**
+* @see \App\Http\Controllers\AttendanceController::store
+ * @see app/Http/Controllers/AttendanceController.php:147
+ * @route '/attendance'
+ */
+    const storeForm = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+        action: store.url(options),
+        method: 'post',
+    })
+
+            /**
+* @see \App\Http\Controllers\AttendanceController::store
+ * @see app/Http/Controllers/AttendanceController.php:147
+ * @route '/attendance'
+ */
+        storeForm.post = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+            action: store.url(options),
+            method: 'post',
+        })
+    
+    store.form = storeForm
 /**
 * @see \App\Http\Controllers\AttendanceController::download
  * @see app/Http/Controllers/AttendanceController.php:226
@@ -120,6 +176,41 @@ download.head = (options?: RouteQueryOptions): RouteDefinition<'head'> => ({
     method: 'head',
 })
 
+    /**
+* @see \App\Http\Controllers\AttendanceController::download
+ * @see app/Http/Controllers/AttendanceController.php:226
+ * @route '/attendance/download'
+ */
+    const downloadForm = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+        action: download.url(options),
+        method: 'get',
+    })
+
+            /**
+* @see \App\Http\Controllers\AttendanceController::download
+ * @see app/Http/Controllers/AttendanceController.php:226
+ * @route '/attendance/download'
+ */
+        downloadForm.get = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+            action: download.url(options),
+            method: 'get',
+        })
+            /**
+* @see \App\Http\Controllers\AttendanceController::download
+ * @see app/Http/Controllers/AttendanceController.php:226
+ * @route '/attendance/download'
+ */
+        downloadForm.head = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+            action: download.url({
+                        [options?.mergeQuery ? 'mergeQuery' : 'query']: {
+                            _method: 'HEAD',
+                            ...(options?.query ?? options?.mergeQuery ?? {}),
+                        }
+                    }),
+            method: 'get',
+        })
+    
+    download.form = downloadForm
 /**
 * @see \App\Http\Controllers\AttendanceController::holidays
  * @see app/Http/Controllers/AttendanceController.php:138
@@ -163,6 +254,41 @@ holidays.head = (options?: RouteQueryOptions): RouteDefinition<'head'> => ({
     method: 'head',
 })
 
+    /**
+* @see \App\Http\Controllers\AttendanceController::holidays
+ * @see app/Http/Controllers/AttendanceController.php:138
+ * @route '/attendance/holidays'
+ */
+    const holidaysForm = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+        action: holidays.url(options),
+        method: 'get',
+    })
+
+            /**
+* @see \App\Http\Controllers\AttendanceController::holidays
+ * @see app/Http/Controllers/AttendanceController.php:138
+ * @route '/attendance/holidays'
+ */
+        holidaysForm.get = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+            action: holidays.url(options),
+            method: 'get',
+        })
+            /**
+* @see \App\Http\Controllers\AttendanceController::holidays
+ * @see app/Http/Controllers/AttendanceController.php:138
+ * @route '/attendance/holidays'
+ */
+        holidaysForm.head = (options?: RouteQueryOptions): RouteFormDefinition<'get'> => ({
+            action: holidays.url({
+                        [options?.mergeQuery ? 'mergeQuery' : 'query']: {
+                            _method: 'HEAD',
+                            ...(options?.query ?? options?.mergeQuery ?? {}),
+                        }
+                    }),
+            method: 'get',
+        })
+    
+    holidays.form = holidaysForm
 /**
 * @see \App\Http\Controllers\AttendanceController::upload
  * @see app/Http/Controllers/AttendanceController.php:246
@@ -196,6 +322,28 @@ upload.post = (options?: RouteQueryOptions): RouteDefinition<'post'> => ({
     url: upload.url(options),
     method: 'post',
 })
+
+    /**
+* @see \App\Http\Controllers\AttendanceController::upload
+ * @see app/Http/Controllers/AttendanceController.php:246
+ * @route '/attendance/upload'
+ */
+    const uploadForm = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+        action: upload.url(options),
+        method: 'post',
+    })
+
+            /**
+* @see \App\Http\Controllers\AttendanceController::upload
+ * @see app/Http/Controllers/AttendanceController.php:246
+ * @route '/attendance/upload'
+ */
+        uploadForm.post = (options?: RouteQueryOptions): RouteFormDefinition<'post'> => ({
+            action: upload.url(options),
+            method: 'post',
+        })
+    
+    upload.form = uploadForm
 const attendance = {
     index: Object.assign(index, index),
 store: Object.assign(store, store),

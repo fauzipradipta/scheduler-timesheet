@@ -1,4 +1,8 @@
 {
+  "_AuthenticatedSessionController-Dmilmksu.js": {
+    "file": "assets/AuthenticatedSessionController-Dmilmksu.js",
+    "name": "AuthenticatedSessionController"
+  },
   "_fonts-C9MNnjVw.css": {
     "file": "assets/fonts-C9MNnjVw.css",
     "src": "_fonts-C9MNnjVw.css"
@@ -27,15 +31,24 @@
     "file": "assets/instrument-sans-600-normal-B9e8oLYv.woff",
     "src": "_instrument-sans-600-normal-B9e8oLYv.woff"
   },
-  "_jsx-runtime-CVbzDe-w.js": {
-    "file": "assets/jsx-runtime-CVbzDe-w.js",
+  "_jsx-runtime-CIPdLr4q.js": {
+    "file": "assets/jsx-runtime-CIPdLr4q.js",
     "name": "jsx-runtime",
     "imports": [
       "resources/js/app.tsx"
     ]
   },
+  "_text-field-xAAhGJGM.js": {
+    "file": "assets/text-field-xAAhGJGM.js",
+    "name": "text-field",
+    "imports": [
+      "resources/js/app.tsx",
+      "_jsx-runtime-CIPdLr4q.js",
+      "_AuthenticatedSessionController-Dmilmksu.js"
+    ]
+  },
   "resources/css/app.css": {
-    "file": "assets/app-fj9lGngY.css",
+    "file": "assets/app-BKbCTVlA.css",
     "name": "app",
     "names": [
       "app.css"
@@ -44,33 +57,60 @@
     "isEntry": true
   },
   "resources/js/app.tsx": {
-    "file": "assets/app-BuWJIYbD.js",
+    "file": "assets/app-C54nP0Lf.js",
     "name": "app",
     "src": "resources/js/app.tsx",
     "isEntry": true,
     "dynamicImports": [
       "resources/js/pages/attendance.tsx",
+      "resources/js/pages/auth/login.tsx",
+      "resources/js/pages/auth/register.tsx",
       "resources/js/pages/welcome.tsx"
     ]
   },
   "resources/js/pages/attendance.tsx": {
-    "file": "assets/attendance-CdtVevy4.js",
+    "file": "assets/attendance-Bkk026hW.js",
     "name": "attendance",
     "src": "resources/js/pages/attendance.tsx",
     "isDynamicEntry": true,
     "imports": [
       "resources/js/app.tsx",
-      "_jsx-runtime-CVbzDe-w.js"
+      "_jsx-runtime-CIPdLr4q.js",
+      "_AuthenticatedSessionController-Dmilmksu.js"
+    ]
+  },
+  "resources/js/pages/auth/login.tsx": {
+    "file": "assets/login-DPiAvD5g.js",
+    "name": "login",
+    "src": "resources/js/pages/auth/login.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "resources/js/app.tsx",
+      "_jsx-runtime-CIPdLr4q.js",
+      "_AuthenticatedSessionController-Dmilmksu.js",
+      "_text-field-xAAhGJGM.js"
+    ]
+  },
+  "resources/js/pages/auth/register.tsx": {
+    "file": "assets/register-C4sURcAj.js",
+    "name": "register",
+    "src": "resources/js/pages/auth/register.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "resources/js/app.tsx",
+      "_jsx-runtime-CIPdLr4q.js",
+      "_AuthenticatedSessionController-Dmilmksu.js",
+      "_text-field-xAAhGJGM.js"
     ]
   },
   "resources/js/pages/welcome.tsx": {
-    "file": "assets/welcome-OU_YoU3y.js",
+    "file": "assets/welcome-ClvjcO3l.js",
     "name": "welcome",
     "src": "resources/js/pages/welcome.tsx",
     "isDynamicEntry": true,
     "imports": [
       "resources/js/app.tsx",
-      "_jsx-runtime-CVbzDe-w.js"
+      "_jsx-runtime-CIPdLr4q.js"
     ]
   }
 }
