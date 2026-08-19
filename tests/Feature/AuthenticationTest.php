@@ -84,7 +84,7 @@ test('a successful login clears the throttle', function () {
 test('a logged in user is sent away from the login page', function () {
     $this->actingAs(User::factory()->create())
         ->get(route('login'))
-        ->assertRedirect();
+        ->assertRedirect(route('attendance.index'));
 });
 
 test('logging out ends the session', function () {
