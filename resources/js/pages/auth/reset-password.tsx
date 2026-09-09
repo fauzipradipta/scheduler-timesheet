@@ -1,41 +1,30 @@
 import { Link, useForm } from '@inertiajs/react';
 import type { SyntheticEvent } from 'react';
-import { store } from '@/actions/App/Http/Controllers/Auth/AuthenticatedSessionController';
-import { create as registerPage } from '@/actions/App/Http/Controllers/Auth/RegisteredUserController';
-import { create as resetPasswordPage } from '@/actions/App/Http/Controllers/Auth/ResetPasswordController';
+import { create as loginPage } from '@/actions/App/Http/Controllers/Auth/AuthenticatedSessionController';
+import { store } from '@/actions/App/Http/Controllers/Auth/ResetPasswordController';
 import AuthLayout from '@/components/auth-layout';
 import TextField from '@/components/text-field';
 
-type LoginProps = {
-    status?: string;
-};
-
-export default function Login({ status }: LoginProps) {
+export default function ResetPassword() {
     const { data, setData, submit, processing, errors, reset } = useForm({
         email: '',
         password: '',
-        remember: false,
+        password_confirmation: '',
     });
 
     const handleSubmit = (event: SyntheticEvent<HTMLFormElement>) => {
         event.preventDefault();
 
         submit(store(), {
-            onFinish: () => reset('password'),
+            onFinish: () => reset('password', 'password_confirmation'),
         });
     };
 
     return (
         <AuthLayout
-            title="Log in"
-            description="Sign in to reach your attendance log."
+            title="Reset password"
+            description="Pick a new password for your account. It takes effect right away."
         >
-            {status && (
-                <p className="mb-4 text-sm text-[#1b7f4e] dark:text-[#4ade80]">
-                    {status}
-                </p>
-            )}
-
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <TextField
                     id="email"
@@ -52,51 +41,45 @@ export default function Login({ status }: LoginProps) {
                 <TextField
                     id="password"
                     type="password"
-                    label="Password"
+                    label="New password"
                     value={data.password}
                     onChange={(event) =>
                         setData('password', event.target.value)
                     }
-                    autoComplete="current-password"
+                    autoComplete="new-password"
                     required
                     error={errors.password}
                 />
 
-                <Link
-                    href={resetPasswordPage()}
-                    className="-mt-2 self-start text-sm text-[#706f6c] underline underline-offset-4 dark:text-[#A1A09A]"
-                >
-                    Forgot your password?
-                </Link>
-
-                <label className="flex items-center gap-2 text-sm text-[#706f6c] dark:text-[#A1A09A]">
-                    <input
-                        type="checkbox"
-                        checked={data.remember}
-                        onChange={(event) =>
-                            setData('remember', event.target.checked)
-                        }
-                        className="rounded border-[#e3e3e0] dark:border-[#3E3E3A]"
-                    />
-                    Remember me
-                </label>
+                <TextField
+                    id="password_confirmation"
+                    type="password"
+                    label="Confirm password"
+                    value={data.password_confirmation}
+                    onChange={(event) =>
+                        setData('password_confirmation', event.target.value)
+                    }
+                    autoComplete="new-password"
+                    required
+                    error={errors.password_confirmation}
+                />
 
                 <button
                     type="submit"
                     disabled={processing}
                     className="rounded-sm border border-black bg-[#1b1b18] px-5 py-2 text-sm leading-normal text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#eeeeec] dark:bg-[#eeeeec] dark:text-[#1C1C1A] dark:hover:bg-white"
                 >
-                    {processing ? 'Logging in…' : 'Log in'}
+                    {processing ? 'Resetting…' : 'Reset password'}
                 </button>
             </form>
 
             <p className="mt-4 text-sm text-[#706f6c] dark:text-[#A1A09A]">
-                No account yet?{' '}
+                Remembered it?{' '}
                 <Link
-                    href={registerPage()}
+                    href={loginPage()}
                     className="font-medium text-[#1b1b18] underline underline-offset-4 dark:text-[#EDEDEC]"
                 >
-                    Register
+                    Log in
                 </Link>
             </p>
         </AuthLayout>
