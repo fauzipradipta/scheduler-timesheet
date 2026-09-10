@@ -3,15 +3,31 @@
 # Ship the latest commit. Run this on the VPS for every release:
 #
 #   cd /var/www/scheduler-timesheet && sudo -u www-data bash deploy/deploy.sh
-#   sudo systemctl reload php8.5-fpm
 #
-# The deploy itself needs no root, only write access to the project.
+# It prints the PHP-FPM reload command to finish with. The deploy itself needs
+# no root, only write access to the project.
 
 set -euo pipefail
 
 APP_DIR="/var/www/scheduler-timesheet"
 BRANCH="master"
-PHP_FPM_SERVICE="php8.5-fpm"
+
+# Servers differ on which PHP they run, so ask rather than assume. Prefer a
+# unit systemd actually has; fall back to the CLI's own version.
+detect_php_fpm() {
+    local unit
+    unit="$(systemctl list-units --type=service --all --no-legend --plain 'php*fpm*.service' 2>/dev/null \
+        | awk '{print $1}' | head -n1)"
+
+    if [[ -n "$unit" ]]; then
+        echo "${unit%.service}"
+        return
+    fi
+
+    echo "php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')-fpm"
+}
+
+PHP_FPM_SERVICE="$(detect_php_fpm)"
 
 # 'sudo -u www-data' leaves HOME pointing at the calling user, which npm and
 # Composer cannot write to. Give them a cache directory of their own instead.
