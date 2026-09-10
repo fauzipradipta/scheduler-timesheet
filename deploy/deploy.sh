@@ -36,6 +36,13 @@ php artisan down --retry=15 || true
 echo "==> Installing PHP dependencies"
 composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
 
+echo "==> Clearing the previous release's caches"
+# Wayfinder writes its TypeScript from the route list, and the build imports
+# what it writes. A routes cache left behind by the previous release hides new
+# routes from it, so the build fails on an import for a file it never wrote.
+# This has to happen before the build, not after it.
+php artisan optimize:clear
+
 echo "==> Building the frontend"
 # Inertia resolves pages through the Vite manifest and public/build is not in
 # git, so this build is what makes new pages reachable at all. The build needs
