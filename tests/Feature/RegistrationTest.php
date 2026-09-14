@@ -13,6 +13,9 @@ test('a new user can register and lands signed in', function () {
     $this->post(route('register.store'), [
         'name' => 'Ada Lovelace',
         'email' => 'ada@example.com',
+        'ntt_id' => 'NTT000001',
+        'project_name' => 'Analytical Engine',
+        'division' => 'Engineering',
         'password' => 'analytical-engine',
         'password_confirmation' => 'analytical-engine',
     ])->assertRedirect(route('attendance.index'));
@@ -21,6 +24,9 @@ test('a new user can register and lands signed in', function () {
 
     expect($user)->not->toBeNull()
         ->and($user->name)->toBe('Ada Lovelace')
+        ->and($user->ntt_id)->toBe('NTT000001')
+        ->and($user->project_name)->toBe('Analytical Engine')
+        ->and($user->division)->toBe('Engineering')
         ->and(Hash::check('analytical-engine', $user->password))->toBeTrue();
 
     $this->assertAuthenticatedAs($user);
@@ -28,13 +34,32 @@ test('a new user can register and lands signed in', function () {
 
 test('every field is required', function () {
     $this->post(route('register.store'))
-        ->assertSessionHasErrors(['name', 'email', 'password']);
+        ->assertSessionHasErrors(['name', 'email', 'ntt_id', 'project_name', 'division', 'password']);
+});
+
+test('an NTT ID may only be registered once', function () {
+    User::factory()->create(['ntt_id' => 'NTT000001']);
+
+    $this->post(route('register.store'), [
+        'name' => 'Ada Lovelace',
+        'email' => 'ada@example.com',
+        'ntt_id' => 'NTT000001',
+        'project_name' => 'Analytical Engine',
+        'division' => 'Engineering',
+        'password' => 'analytical-engine',
+        'password_confirmation' => 'analytical-engine',
+    ])->assertSessionHasErrors('ntt_id');
+
+    expect(User::count())->toBe(1);
 });
 
 test('the password must be confirmed', function () {
     $this->post(route('register.store'), [
         'name' => 'Ada Lovelace',
         'email' => 'ada@example.com',
+        'ntt_id' => 'NTT000001',
+        'project_name' => 'Analytical Engine',
+        'division' => 'Engineering',
         'password' => 'analytical-engine',
         'password_confirmation' => 'difference-engine',
     ])->assertSessionHasErrors('password');
@@ -46,6 +71,9 @@ test('the password must be at least eight characters', function () {
     $this->post(route('register.store'), [
         'name' => 'Ada Lovelace',
         'email' => 'ada@example.com',
+        'ntt_id' => 'NTT000001',
+        'project_name' => 'Analytical Engine',
+        'division' => 'Engineering',
         'password' => 'short',
         'password_confirmation' => 'short',
     ])->assertSessionHasErrors('password');
@@ -57,6 +85,9 @@ test('an email may only be registered once', function () {
     $this->post(route('register.store'), [
         'name' => 'Ada Lovelace',
         'email' => 'ada@example.com',
+        'ntt_id' => 'NTT000001',
+        'project_name' => 'Analytical Engine',
+        'division' => 'Engineering',
         'password' => 'analytical-engine',
         'password_confirmation' => 'analytical-engine',
     ])->assertSessionHasErrors('email');

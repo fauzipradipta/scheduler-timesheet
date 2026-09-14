@@ -9,6 +9,9 @@ export default function Register() {
     const { data, setData, submit, processing, errors, reset } = useForm({
         name: '',
         email: '',
+        ntt_id: '',
+        project_name: '',
+        division: '',
         password: '',
         password_confirmation: '',
     });
@@ -48,6 +51,40 @@ export default function Register() {
                     autoComplete="username"
                     required
                     error={errors.email}
+                />
+
+                <TextField
+                    id="ntt_id"
+                    type="text"
+                    label="NTT ID"
+                    value={data.ntt_id}
+                    onChange={(event) => setData('ntt_id', event.target.value)}
+                    required
+                    error={errors.ntt_id}
+                />
+
+                <TextField
+                    id="project_name"
+                    type="text"
+                    label="Project name"
+                    value={data.project_name}
+                    onChange={(event) =>
+                        setData('project_name', event.target.value)
+                    }
+                    required
+                    error={errors.project_name}
+                />
+
+                <TextField
+                    id="division"
+                    type="text"
+                    label="Division"
+                    value={data.division}
+                    onChange={(event) =>
+                        setData('division', event.target.value)
+                    }
+                    required
+                    error={errors.division}
                 />
 
                 <TextField
