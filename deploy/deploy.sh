@@ -36,7 +36,22 @@ export COMPOSER_HOME="${HOME}/.composer"
 export npm_config_cache="${HOME}/.npm"
 mkdir -p "$COMPOSER_HOME" "$npm_config_cache"
 
+# git refuses to work in a repository owned by someone else, which is exactly
+# what a checkout touched by root looks like to www-data. Trust this one path
+# for the length of the script rather than writing it into a global config.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="safe.directory"
+export GIT_CONFIG_VALUE_0="$APP_DIR"
+
 cd "$APP_DIR"
+
+# Trusting the directory gets git reading, but the reset below still has to
+# write. Say so now, with the fix, instead of failing halfway through.
+if [[ ! -O "$APP_DIR/.git" ]]; then
+    echo "Warning: ${APP_DIR}/.git is not owned by $(id -un)." >&2
+    echo "         If this run fails, fix it with:" >&2
+    echo "           sudo chown -R www-data:www-data ${APP_DIR}" >&2
+fi
 
 # Whatever happens below, do not leave the site stuck in maintenance mode.
 trap 'php artisan up >/dev/null 2>&1 || true' EXIT
