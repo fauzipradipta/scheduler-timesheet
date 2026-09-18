@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\Attendance;
 use App\Support\HolidayCalendar;
-use Carbon\Exceptions\InvalidFormatException;
+use App\Support\Timesheets\CsvImporter;
+use App\Support\Timesheets\TemplateImporter;
+use App\Support\Timesheets\TimesheetLayout;
 use DOMDocument;
 use DOMElement;
 use DOMXPath;
@@ -13,7 +15,6 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
@@ -29,54 +30,6 @@ use ZipArchive;
  */
 class AttendanceController extends Controller
 {
-    /**
-     * The template's own legend, mapped to the column each status is counted in.
-     *
-     * @var array<string, string>
-     */
-    private const STATUSES = [
-        'P' => 'E',
-        'S' => 'F',
-        'BT' => 'G',
-        'PM' => 'H',
-        'V' => 'I',
-        'X' => 'J',
-    ];
-
-    private const PRESENT = 'P';
-
-    /**
-     * @var list<string>
-     */
-    private const COLUMNS = ['Date', 'Clock In', 'Clock Out', 'Duration', 'Activity / Remark'];
-
-    private const MAX_ROWS = 500;
-
-    /**
-     * Rows 11 to 41 of the template hold one day each, and the columns below are
-     * the only ones the attendance log can speak to. Everything else in the
-     * workbook - the logo, the header block, the totals and the signatures -
-     * is left exactly as the template author wrote it.
-     */
-    private const FIRST_DATA_ROW = 11;
-
-    private const LAST_DATA_ROW = 41;
-
-    private const DATE_COLUMN = 'A';
-
-    private const START_COLUMN = 'B';
-
-    private const END_COLUMN = 'C';
-
-    private const TOTAL_COLUMN = 'D';
-
-    private const REMARK_COLUMN = 'K';
-
-    /**
-     * The template's own period label, which it formats from a date serial.
-     */
-    private const PERIOD_CELL = 'B8';
-
     /**
      * The signature block's date lines, which the template writes as plain text.
      *
@@ -106,15 +59,6 @@ class AttendanceController extends Controller
      * @var array<string, int>
      */
     private array $styleVariants = [];
-
-    /**
-     * Excel counts days from 1899-12-30, which is 25569 days before the Unix epoch.
-     */
-    private const EXCEL_EPOCH_OFFSET = 25569;
-
-    private const SECONDS_PER_DAY = 86400;
-
-    private const SPREADSHEET_NAMESPACE = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 
     public function index(Request $request, HolidayCalendar $calendar): Response
     {
@@ -171,13 +115,13 @@ class AttendanceController extends Controller
     {
         $validated = $request->validate([
             'date' => ['required', 'date_format:Y-m-d'],
-            'status' => ['required', Rule::in(array_keys(self::STATUSES))],
-            'startedAt' => ['required_if:status,'.self::PRESENT, 'nullable', 'date_format:H:i'],
+            'status' => ['required', Rule::in(array_keys(TimesheetLayout::STATUSES))],
+            'startedAt' => ['required_if:status,'.TimesheetLayout::PRESENT, 'nullable', 'date_format:H:i'],
             'endedAt' => ['nullable', 'date_format:H:i'],
             'description' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        $present = $validated['status'] === self::PRESENT;
+        $present = $validated['status'] === TimesheetLayout::PRESENT;
 
         /** Only a present day carries hours; the rest just mark the day. */
         $clockedInAt = Carbon::createFromFormat(
@@ -243,7 +187,7 @@ class AttendanceController extends Controller
      *
      * @throws ValidationException
      */
-    public function upload(Request $request): RedirectResponse
+    public function upload(Request $request, TemplateImporter $template, CsvImporter $csv): RedirectResponse
     {
         $request->validate([
             'file' => ['required', 'file', 'extensions:xlsx,csv,txt', 'max:2048'],
@@ -252,12 +196,12 @@ class AttendanceController extends Controller
         $file = $request->file('file');
 
         $entries = $this->newestFirst($file->getClientOriginalExtension() === 'xlsx'
-            ? $this->parseSpreadsheet($file->getRealPath())
-            : $this->parseCsv($file->getRealPath()));
+            ? $template->import($file->getRealPath())
+            : $csv->import($file->getRealPath()));
 
         $running = array_filter(
             $entries,
-            fn (array $entry): bool => $entry['clockedOutAt'] === null && $entry['status'] === self::PRESENT,
+            fn (array $entry): bool => $entry['clockedOutAt'] === null && $entry['status'] === TimesheetLayout::PRESENT,
         );
 
         if (count($running) > 1) {
@@ -335,7 +279,7 @@ class AttendanceController extends Controller
         $byDate = $this->groupByDate($entries);
 
         /** The template writes its own period heading from a date serial. */
-        $this->setNumber($document, $xpath, self::PERIOD_CELL, $this->serialFromDate($month));
+        $this->setNumber($document, $xpath, TimesheetLayout::PERIOD_CELL, $this->serialFromDate($month));
 
         /** A sheet is signed on the day it is taken, whichever month it covers. */
         foreach (self::SIGNATURE_DATE_CELLS as $reference) {
@@ -344,7 +288,7 @@ class AttendanceController extends Controller
 
         $daysInMonth = $month->daysInMonth;
 
-        foreach (range(self::FIRST_DATA_ROW, self::LAST_DATA_ROW) as $index => $row) {
+        foreach (range(TimesheetLayout::FIRST_DATA_ROW, TimesheetLayout::LAST_DATA_ROW) as $index => $row) {
             $dayOfMonth = $index + 1;
 
             /** The template holds 31 day rows, so a shorter month leaves spares to clear. */
@@ -359,7 +303,7 @@ class AttendanceController extends Controller
             $key = $date->format('Y-m-d');
             $holiday = $holidays[$key] ?? null;
 
-            $this->setNumber($document, $xpath, self::DATE_COLUMN.$row, $this->serialFromDate($date));
+            $this->setNumber($document, $xpath, TimesheetLayout::DATE_COLUMN.$row, $this->serialFromDate($date));
 
             /**
              * The template's own shading was painted for the month it shipped with,
@@ -378,7 +322,7 @@ class AttendanceController extends Controller
             if ($day === []) {
                 /** A day nobody worked can still say why it was off. */
                 if ($holiday !== null) {
-                    $this->setText($document, $xpath, self::REMARK_COLUMN.$row, $holiday['name']);
+                    $this->setText($document, $xpath, TimesheetLayout::REMARK_COLUMN.$row, $holiday['name']);
                 }
 
                 continue;
@@ -407,27 +351,27 @@ class AttendanceController extends Controller
     {
         usort($day, fn (array $first, array $second): int => strcmp($first['clockedInAt'], $second['clockedInAt']));
 
-        $worked = array_values(array_filter($day, fn (array $entry): bool => $entry['status'] === self::PRESENT));
+        $worked = array_values(array_filter($day, fn (array $entry): bool => $entry['status'] === TimesheetLayout::PRESENT));
 
         if ($worked !== []) {
-            $this->setNumber($document, $xpath, self::START_COLUMN.$row, $this->fractionOfDay(Carbon::parse($worked[0]['clockedInAt'])));
+            $this->setNumber($document, $xpath, TimesheetLayout::START_COLUMN.$row, $this->fractionOfDay(Carbon::parse($worked[0]['clockedInAt'])));
 
             $ends = array_filter(array_column($worked, 'clockedOutAt'));
 
             if ($ends !== []) {
-                $this->setNumber($document, $xpath, self::END_COLUMN.$row, $this->fractionOfDay(Carbon::parse(max($ends))));
+                $this->setNumber($document, $xpath, TimesheetLayout::END_COLUMN.$row, $this->fractionOfDay(Carbon::parse(max($ends))));
             }
 
             $seconds = array_sum(array_map($this->durationInSeconds(...), $worked));
 
             if ($seconds > 0) {
-                $this->setNumber($document, $xpath, self::TOTAL_COLUMN.$row, $seconds / self::SECONDS_PER_DAY);
+                $this->setNumber($document, $xpath, TimesheetLayout::TOTAL_COLUMN.$row, $seconds / TimesheetLayout::SECONDS_PER_DAY);
             }
         }
 
         /** Each status is counted in its own column, so mark the last one claimed for the day. */
         foreach (array_unique(array_column($day, 'status')) as $status) {
-            $this->setText($document, $xpath, self::STATUSES[$status].$row, $status);
+            $this->setText($document, $xpath, TimesheetLayout::STATUSES[$status].$row, $status);
         }
 
         $remark = implode('; ', array_unique(array_filter(array_map(
@@ -436,181 +380,8 @@ class AttendanceController extends Controller
         ))));
 
         if ($remark !== '') {
-            $this->setText($document, $xpath, self::REMARK_COLUMN.$row, $remark);
+            $this->setText($document, $xpath, TimesheetLayout::REMARK_COLUMN.$row, $remark);
         }
-    }
-
-    /**
-     * Read the attendance columns back out of a filled template.
-     *
-     * @return list<Entry>
-     *
-     * @throws ValidationException
-     */
-    private function parseSpreadsheet(string $path): array
-    {
-        $zip = new ZipArchive;
-
-        if ($zip->open($path) !== true) {
-            throw ValidationException::withMessages(['file' => 'The timesheet could not be opened.']);
-        }
-
-        $sheet = $zip->getFromName('xl/worksheets/sheet1.xml');
-        $strings = $this->sharedStrings($zip);
-        $zip->close();
-
-        if ($sheet === false) {
-            throw ValidationException::withMessages(['file' => 'The timesheet has no first worksheet.']);
-        }
-
-        $document = new DOMDocument;
-        $document->loadXML($sheet);
-        $xpath = $this->xpath($document);
-
-        $entries = [];
-
-        foreach (range(self::FIRST_DATA_ROW, self::LAST_DATA_ROW) as $row) {
-            $serial = $this->numberAt($xpath, self::DATE_COLUMN.$row);
-            $start = $this->numberAt($xpath, self::START_COLUMN.$row);
-            $status = $this->statusAt($xpath, $row, $strings);
-
-            if ($serial === null || ($start === null && $status === null)) {
-                continue;
-            }
-
-            $date = Carbon::parse($this->dateFromSerial($serial));
-            $clockedInAt = $date->copy()->addSeconds($start === null ? 0 : $this->secondsOfDay($start));
-
-            $end = $start === null ? null : $this->numberAt($xpath, self::END_COLUMN.$row);
-            $clockedOutAt = $end === null
-                ? null
-                : $date->copy()->addSeconds($this->secondsOfDay($end));
-
-            if ($clockedOutAt !== null && $clockedOutAt->lessThan($clockedInAt)) {
-                $clockedOutAt = $clockedOutAt->addDay();
-            }
-
-            $entries[] = [
-                'id' => (string) Str::uuid(),
-                'clockedInAt' => $clockedInAt->toIso8601String(),
-                'clockedOutAt' => $clockedOutAt?->toIso8601String(),
-                'status' => $status ?? self::PRESENT,
-                'description' => $this->textAt($xpath, self::REMARK_COLUMN.$row, $strings),
-            ];
-        }
-
-        return $entries;
-    }
-
-    /**
-     * Read every data row of a CSV timesheet, ignoring the header and total rows.
-     *
-     * @return list<Entry>
-     *
-     * @throws ValidationException
-     */
-    private function parseCsv(string $path): array
-    {
-        $handle = fopen($path, 'rb');
-
-        if ($handle === false) {
-            throw ValidationException::withMessages(['file' => 'The timesheet could not be read.']);
-        }
-
-        $entries = [];
-        $number = 0;
-
-        try {
-            while (($row = fgetcsv($handle, escape: '')) !== false) {
-                $number++;
-                $row[0] = ltrim((string) ($row[0] ?? ''), "\xEF\xBB\xBF");
-
-                if ($this->isSkippableRow($row, $number)) {
-                    continue;
-                }
-
-                if (count($entries) === self::MAX_ROWS) {
-                    throw ValidationException::withMessages([
-                        'file' => 'The timesheet may not have more than '.self::MAX_ROWS.' entries.',
-                    ]);
-                }
-
-                $entries[] = $this->entryFromRow($row, $number);
-            }
-        } finally {
-            fclose($handle);
-        }
-
-        return $entries;
-    }
-
-    /**
-     * Skip the header row, the total row, and blank lines.
-     *
-     * @param  list<string|null>  $row
-     */
-    private function isSkippableRow(array $row, int $number): bool
-    {
-        $date = trim((string) $row[0]);
-
-        return ($number === 1 && $date === self::COLUMNS[0])
-            || $date === 'Total'
-            || implode('', array_map(fn (?string $value): string => trim((string) $value), $row)) === '';
-    }
-
-    /**
-     * @param  list<string|null>  $row
-     * @return Entry
-     *
-     * @throws ValidationException
-     */
-    private function entryFromRow(array $row, int $number): array
-    {
-        $clockedInAt = $this->parseMoment(trim((string) ($row[0] ?? '')), trim((string) ($row[1] ?? '')), $number);
-        $clockedOut = trim((string) ($row[2] ?? ''));
-        $clockedOutAt = $clockedOut !== ''
-            ? $this->parseMoment(trim((string) ($row[0] ?? '')), $clockedOut, $number)
-            : null;
-
-        if ($clockedOutAt !== null && $clockedOutAt->lessThan($clockedInAt)) {
-            $clockedOutAt = $clockedOutAt->addDay();
-        }
-
-        $description = trim((string) ($row[4] ?? ''));
-
-        if (mb_strlen($description) > 1000) {
-            throw ValidationException::withMessages([
-                'file' => "Row {$number} has a description longer than 1000 characters.",
-            ]);
-        }
-
-        return [
-            'id' => (string) Str::uuid(),
-            'clockedInAt' => $clockedInAt->toIso8601String(),
-            'clockedOutAt' => $clockedOutAt?->toIso8601String(),
-            'status' => self::PRESENT,
-            'description' => $description,
-        ];
-    }
-
-    /**
-     * @throws ValidationException
-     */
-    private function parseMoment(string $date, string $time, int $number): Carbon
-    {
-        try {
-            $moment = Carbon::createFromFormat('Y-m-d H:i', "{$date} {$time}")->seconds(0);
-        } catch (InvalidFormatException) {
-            $moment = null;
-        }
-
-        if ($moment === null || $moment->format('Y-m-d H:i') !== "{$date} {$time}") {
-            throw ValidationException::withMessages([
-                'file' => "Row {$number} needs a date as YYYY-MM-DD and a time as HH:MM.",
-            ]);
-        }
-
-        return $moment;
     }
 
     /**
@@ -658,28 +429,18 @@ class AttendanceController extends Controller
 
     private function fractionOfDay(Carbon $moment): float
     {
-        return (($moment->hour * 3600) + ($moment->minute * 60) + $moment->second) / self::SECONDS_PER_DAY;
-    }
-
-    private function secondsOfDay(float $fraction): int
-    {
-        return (int) round($fraction * self::SECONDS_PER_DAY);
-    }
-
-    private function dateFromSerial(float $serial): string
-    {
-        return Carbon::createFromTimestampUTC((int) (floor($serial) - self::EXCEL_EPOCH_OFFSET) * self::SECONDS_PER_DAY)
-            ->format('Y-m-d');
+        return (($moment->hour * 3600) + ($moment->minute * 60) + $moment->second) / TimesheetLayout::SECONDS_PER_DAY;
     }
 
     /**
-     * The inverse of dateFromSerial, so a written date reads back as the same day.
+     * The inverse of the importer's own serial reading, so a written date reads
+     * back as the same day.
      */
     private function serialFromDate(Carbon $date): float
     {
         $midnight = Carbon::createFromFormat('Y-m-d', $date->format('Y-m-d'), 'UTC')->startOfDay();
 
-        return $midnight->getTimestamp() / self::SECONDS_PER_DAY + self::EXCEL_EPOCH_OFFSET;
+        return $midnight->getTimestamp() / TimesheetLayout::SECONDS_PER_DAY + TimesheetLayout::EXCEL_EPOCH_OFFSET;
     }
 
     /**
@@ -747,12 +508,12 @@ class AttendanceController extends Controller
     private function clearRow(DOMXPath $xpath, int $row): void
     {
         $columns = [
-            self::DATE_COLUMN,
-            self::START_COLUMN,
-            self::END_COLUMN,
-            self::TOTAL_COLUMN,
-            ...array_values(self::STATUSES),
-            self::REMARK_COLUMN,
+            TimesheetLayout::DATE_COLUMN,
+            TimesheetLayout::START_COLUMN,
+            TimesheetLayout::END_COLUMN,
+            TimesheetLayout::TOTAL_COLUMN,
+            ...array_values(TimesheetLayout::STATUSES),
+            TimesheetLayout::REMARK_COLUMN,
         ];
 
         foreach ($columns as $column) {
@@ -785,7 +546,7 @@ class AttendanceController extends Controller
         $document = new DOMDocument;
         $document->loadXML($workbook);
 
-        $properties = $document->getElementsByTagNameNS(self::SPREADSHEET_NAMESPACE, 'calcPr')->item(0);
+        $properties = $document->getElementsByTagNameNS(TimesheetLayout::SPREADSHEET_NAMESPACE, 'calcPr')->item(0);
 
         if (! $properties instanceof DOMElement) {
             return;
@@ -794,82 +555,6 @@ class AttendanceController extends Controller
         $properties->setAttribute('fullCalcOnLoad', '1');
 
         $zip->addFromString('xl/workbook.xml', (string) $document->saveXML());
-    }
-
-    /**
-     * @return array<int, string>
-     */
-    private function sharedStrings(ZipArchive $zip): array
-    {
-        $xml = $zip->getFromName('xl/sharedStrings.xml');
-
-        if ($xml === false) {
-            return [];
-        }
-
-        $document = new DOMDocument;
-        $document->loadXML($xml);
-
-        $strings = [];
-
-        foreach ($document->getElementsByTagNameNS(self::SPREADSHEET_NAMESPACE, 'si') as $item) {
-            $strings[] = $item->textContent;
-        }
-
-        return $strings;
-    }
-
-    private function numberAt(DOMXPath $xpath, string $reference): ?float
-    {
-        $cell = $this->find($xpath, '//x:c[@r="'.$reference.'"]');
-
-        if ($cell === null || $cell->getAttribute('t') === 's') {
-            return null;
-        }
-
-        $value = $cell->getElementsByTagNameNS(self::SPREADSHEET_NAMESPACE, 'v')->item(0);
-
-        if ($value === null || ! is_numeric($value->textContent)) {
-            return null;
-        }
-
-        return (float) $value->textContent;
-    }
-
-    /**
-     * Whichever status column carries a mark is the status claimed for that day.
-     *
-     * @param  array<int, string>  $strings
-     */
-    private function statusAt(DOMXPath $xpath, int $row, array $strings): ?string
-    {
-        foreach (self::STATUSES as $status => $column) {
-            if ($this->textAt($xpath, $column.$row, $strings) !== '') {
-                return $status;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  array<int, string>  $strings
-     */
-    private function textAt(DOMXPath $xpath, string $reference, array $strings): string
-    {
-        $cell = $this->find($xpath, '//x:c[@r="'.$reference.'"]');
-
-        if ($cell === null) {
-            return '';
-        }
-
-        if ($cell->getAttribute('t') === 's') {
-            $index = $cell->getElementsByTagNameNS(self::SPREADSHEET_NAMESPACE, 'v')->item(0);
-
-            return $index === null ? '' : ($strings[(int) $index->textContent] ?? '');
-        }
-
-        return trim($cell->textContent);
     }
 
     private function setNumber(DOMDocument $document, DOMXPath $xpath, string $reference, float $value): void
@@ -889,8 +574,8 @@ class AttendanceController extends Controller
             $cell->removeChild($cell->firstChild);
         }
 
-        $inline = $document->createElementNS(self::SPREADSHEET_NAMESPACE, 'is');
-        $inline->appendChild($document->createElementNS(self::SPREADSHEET_NAMESPACE, 't', htmlspecialchars($value, ENT_XML1)));
+        $inline = $document->createElementNS(TimesheetLayout::SPREADSHEET_NAMESPACE, 'is');
+        $inline->appendChild($document->createElementNS(TimesheetLayout::SPREADSHEET_NAMESPACE, 't', htmlspecialchars($value, ENT_XML1)));
         $cell->appendChild($inline);
     }
 
@@ -900,7 +585,7 @@ class AttendanceController extends Controller
             $cell->removeChild($cell->firstChild);
         }
 
-        $cell->appendChild($document->createElementNS(self::SPREADSHEET_NAMESPACE, $tag, $value));
+        $cell->appendChild($document->createElementNS(TimesheetLayout::SPREADSHEET_NAMESPACE, $tag, $value));
     }
 
     /**
@@ -924,10 +609,10 @@ class AttendanceController extends Controller
             throw new RuntimeException("The timesheet template has no row {$matches[2]}.");
         }
 
-        $cell = $document->createElementNS(self::SPREADSHEET_NAMESPACE, 'c');
+        $cell = $document->createElementNS(TimesheetLayout::SPREADSHEET_NAMESPACE, 'c');
         $cell->setAttribute('r', $reference);
 
-        foreach ($row->getElementsByTagNameNS(self::SPREADSHEET_NAMESPACE, 'c') as $sibling) {
+        foreach ($row->getElementsByTagNameNS(TimesheetLayout::SPREADSHEET_NAMESPACE, 'c') as $sibling) {
             if (preg_match('/^([A-Z]+)/', $sibling->getAttribute('r'), $siblingColumn) !== 1) {
                 continue;
             }
@@ -971,7 +656,7 @@ class AttendanceController extends Controller
     private function xpath(DOMDocument $document): DOMXPath
     {
         $xpath = new DOMXPath($document);
-        $xpath->registerNamespace('x', self::SPREADSHEET_NAMESPACE);
+        $xpath->registerNamespace('x', TimesheetLayout::SPREADSHEET_NAMESPACE);
 
         return $xpath;
     }
@@ -1003,7 +688,7 @@ class AttendanceController extends Controller
         $request->user()->attendances()->create([
             'clocked_in_at' => now(),
             'clocked_out_at' => null,
-            'status' => self::PRESENT,
+            'status' => TimesheetLayout::PRESENT,
             'description' => $description,
         ]);
     }
@@ -1055,7 +740,7 @@ class AttendanceController extends Controller
         return $request->user()
             ->attendances()
             ->whereNull('clocked_out_at')
-            ->where('status', self::PRESENT)
+            ->where('status', TimesheetLayout::PRESENT)
             ->latest('clocked_in_at')
             ->first();
     }
@@ -1069,7 +754,7 @@ class AttendanceController extends Controller
     private function activeEntry(array $entries): ?array
     {
         foreach ($entries as $entry) {
-            if ($entry['clockedOutAt'] === null && $entry['status'] === self::PRESENT) {
+            if ($entry['clockedOutAt'] === null && $entry['status'] === TimesheetLayout::PRESENT) {
                 return $entry;
             }
         }
