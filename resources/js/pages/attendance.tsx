@@ -123,6 +123,20 @@ export default function Attendance({
             return;
         }
 
+        /** An upload rewrites every day the file carries, so say so first. */
+        if (
+            entries.length > 0 &&
+            !window.confirm(
+                `Import ${file.name}? Every day the file covers is replaced by its rows. Days it leaves out are kept.`,
+            )
+        ) {
+            if (fileInput.current) {
+                fileInput.current.value = '';
+            }
+
+            return;
+        }
+
         uploadForm.transform(() => ({ file }));
         uploadForm.submit(upload(), {
             preserveScroll: true,
