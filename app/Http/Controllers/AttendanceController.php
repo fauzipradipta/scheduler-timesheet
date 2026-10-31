@@ -10,6 +10,7 @@ use App\Support\Timesheets\TimesheetLayout;
 use DOMDocument;
 use DOMElement;
 use DOMXPath;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -183,7 +184,10 @@ class AttendanceController extends Controller
     }
 
     /**
-     * Replace the stored entries with the rows of an uploaded timesheet.
+     * Merge the rows of an uploaded timesheet into the log. Every day the file
+     * carries is rewritten from the file; every day it leaves out is kept as it
+     * stands, because a timesheet covers one month and must not take the rest
+     * of the log down with it.
      *
      * @throws ValidationException
      */
@@ -199,20 +203,21 @@ class AttendanceController extends Controller
             ? $template->import($file->getRealPath())
             : $csv->import($file->getRealPath()));
 
-        $running = array_filter(
-            $entries,
-            fn (array $entry): bool => $entry['clockedOutAt'] === null && $entry['status'] === TimesheetLayout::PRESENT,
-        );
-
-        if (count($running) > 1) {
+        if ($entries === []) {
             throw ValidationException::withMessages([
-                'file' => 'Only one entry may be left without a clock out time.',
+                'file' => 'The timesheet has no attendance rows to import.',
             ]);
         }
 
-        /** An upload replaces the log outright, so a half written import must not survive. */
-        DB::transaction(function () use ($request, $entries): void {
-            $request->user()->attendances()->delete();
+        $days = array_keys($this->groupByDate($entries));
+
+        $this->guardOneOpenEntry($request, $entries, $days);
+
+        /** An upload rewrites whole days, so a half written import must not survive. */
+        DB::transaction(function () use ($request, $entries, $days): void {
+            $request->user()->attendances()
+                ->where(fn (Builder $query): Builder => $this->onAnyDay($query, $days))
+                ->delete();
 
             $request->user()->attendances()->createMany(array_map(fn (array $entry): array => [
                 'clocked_in_at' => Carbon::parse($entry['clockedInAt']),
@@ -223,6 +228,62 @@ class AttendanceController extends Controller
         });
 
         return to_route('attendance.index');
+    }
+
+    /**
+     * Only one day may be left running at a time. The file's own rows are
+     * counted together with the running days it does not cover, since a merge
+     * leaves those in place.
+     *
+     * @param  list<Entry>  $entries
+     * @param  list<string>  $days
+     *
+     * @throws ValidationException
+     */
+    private function guardOneOpenEntry(Request $request, array $entries, array $days): void
+    {
+        $uploaded = count(array_filter(
+            $entries,
+            fn (array $entry): bool => $entry['clockedOutAt'] === null && $entry['status'] === TimesheetLayout::PRESENT,
+        ));
+
+        if ($uploaded > 1) {
+            throw ValidationException::withMessages([
+                'file' => 'Only one entry may be left without a clock out time.',
+            ]);
+        }
+
+        $kept = $request->user()->attendances()
+            ->whereNull('clocked_out_at')
+            ->where('status', TimesheetLayout::PRESENT)
+            ->whereNot(fn (Builder $query): Builder => $this->onAnyDay($query, $days))
+            ->count();
+
+        if ($uploaded + $kept > 1) {
+            throw ValidationException::withMessages([
+                'file' => 'Another day is still running. Close it before importing a timesheet that leaves an entry open.',
+            ]);
+        }
+    }
+
+    /**
+     * Narrow a query to the entries clocked into on any of the given days. The
+     * days are matched as ranges rather than with a date function so the
+     * user and clock in index still carries the lookup.
+     *
+     * @param  Builder<Attendance>  $query
+     * @param  list<string>  $days
+     * @return Builder<Attendance>
+     */
+    private function onAnyDay(Builder $query, array $days): Builder
+    {
+        foreach ($days as $day) {
+            $start = Carbon::createFromFormat('Y-m-d', $day)->startOfDay();
+
+            $query->orWhereBetween('clocked_in_at', [$start, $start->copy()->endOfDay()]);
+        }
+
+        return $query;
     }
 
     /**

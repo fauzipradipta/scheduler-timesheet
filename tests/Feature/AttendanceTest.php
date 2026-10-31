@@ -744,8 +744,8 @@ function timesheet(string $body): File
     return UploadedFile::fake()->createWithContent('attendance.csv', $body);
 }
 
-test('uploading a timesheet replaces the stored entries', function () {
-    openAttendanceEntry();
+test('uploading a timesheet rewrites the days the file carries', function () {
+    logEntry('2026-08-04T07:00:00+00:00', '2026-08-04T09:00:00+00:00', 'P', 'Logged the wrong hours');
 
     $this->post(route('attendance.upload'), [
         'file' => timesheet(<<<'CSV'
@@ -763,6 +763,64 @@ test('uploading a timesheet replaces the stored entries', function () {
         ->and($entries[0]['clockedInAt'])->toStartWith('2026-08-05T09:12:00')
         ->and($entries[0]['clockedOutAt'])->toStartWith('2026-08-05T17:03:00')
         ->and($entries[1]['description'])->toBe('Bug triage');
+});
+
+test('uploading a month leaves the rest of the log standing', function () {
+    logEntry('2026-07-20T09:00:00+00:00', '2026-07-20T17:00:00+00:00', 'P', 'July work');
+    logEntry('2026-09-02T09:00:00+00:00', '2026-09-02T17:00:00+00:00', 'P', 'September work');
+
+    $this->post(route('attendance.upload'), [
+        'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,09:12,17:03,07:51,\"Sprint planning\""),
+    ])->assertRedirect(route('attendance.index'));
+
+    expect(array_column(storedEntries(), 'description'))
+        ->toBe(['September work', 'Sprint planning', 'July work']);
+});
+
+test('uploading leaves an untouched day of the same month alone', function () {
+    logEntry('2026-08-04T09:00:00+00:00', '2026-08-04T17:00:00+00:00', 'P', 'Bug triage');
+
+    $this->post(route('attendance.upload'), [
+        'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,09:12,17:03,07:51,\"Sprint planning\""),
+    ])->assertRedirect(route('attendance.index'));
+
+    expect(array_column(storedEntries(), 'description'))
+        ->toBe(['Sprint planning', 'Bug triage']);
+});
+
+test('a timesheet with no rows is refused rather than clearing the log', function () {
+    logEntry('2026-08-05T09:00:00+00:00', '2026-08-05T17:00:00+00:00', 'P', 'Sprint planning');
+
+    $this->post(route('attendance.upload'), [
+        'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\nTotal,,,00:00,"),
+    ])->assertSessionHasErrors('file');
+
+    expect(storedEntries())->toHaveCount(1);
+});
+
+test('an upload that would leave a second entry running is refused', function () {
+    logEntry('2026-07-20T09:00:00+00:00', null, 'P', 'Still running from July');
+
+    $this->post(route('attendance.upload'), [
+        'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,09:12,,,\"Still going\""),
+    ])->assertSessionHasErrors('file');
+
+    expect(storedEntries())->toHaveCount(1)
+        ->and(storedEntries()[0]['description'])->toBe('Still running from July');
+});
+
+test('an upload may close the running day it covers and open another', function () {
+    logEntry('2026-08-05T09:00:00+00:00', null, 'P', 'Still running');
+
+    $this->post(route('attendance.upload'), [
+        'file' => timesheet("Date,\"Clock In\",\"Clock Out\",Duration,Description\n2026-08-05,09:12,,,\"Still going\""),
+    ])->assertRedirect(route('attendance.index'));
+
+    $entries = storedEntries();
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['description'])->toBe('Still going')
+        ->and($entries[0]['clockedOutAt'])->toBeNull();
 });
 
 test('uploading keeps a row without a clock out time open', function () {
