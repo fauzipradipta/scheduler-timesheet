@@ -44,6 +44,9 @@ class TemplateImporter
         $document->loadXML($sheet);
         $xpath = $this->xpath($document);
 
+        /** The file names its own added columns, so they are read by its headings rather than ours. */
+        $columns = TemplateColumns::read($path);
+
         $entries = [];
 
         foreach (range(TimesheetLayout::FIRST_DATA_ROW, TimesheetLayout::LAST_DATA_ROW) as $row) {
@@ -73,6 +76,7 @@ class TemplateImporter
                 'clockedOutAt' => $clockedOutAt?->toIso8601String(),
                 'status' => $status ?? TimesheetLayout::PRESENT,
                 'description' => $this->textAt($xpath, TimesheetLayout::REMARK_COLUMN.$row, $strings),
+                'extra' => $this->extraAt($xpath, $row, $columns, $strings),
             ];
         }
 
@@ -133,6 +137,28 @@ class TemplateImporter
         }
 
         return null;
+    }
+
+    /**
+     * The day's values for the columns the file's template added, keyed by heading.
+     *
+     * @param  list<array{column: string, label: string}>  $columns
+     * @param  array<int, string>  $strings
+     * @return array<string, string>
+     */
+    private function extraAt(DOMXPath $xpath, int $row, array $columns, array $strings): array
+    {
+        $extra = [];
+
+        foreach ($columns as $column) {
+            $value = $this->textAt($xpath, $column['column'].$row, $strings);
+
+            if ($value !== '') {
+                $extra[$column['label']] = $value;
+            }
+        }
+
+        return $extra;
     }
 
     /**

@@ -16,12 +16,13 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $clocked_out_at
  * @property string $status
  * @property string|null $description
+ * @property array<string, string>|null $extra
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  *
- * @phpstan-type Entry array{id: string, clockedInAt: string, clockedOutAt: string|null, status: string, description: string}
+ * @phpstan-type Entry array{id: string, clockedInAt: string, clockedOutAt: string|null, status: string, description: string, extra: array<string, string>}
  */
-#[Fillable(['clocked_in_at', 'clocked_out_at', 'status', 'description'])]
+#[Fillable(['clocked_in_at', 'clocked_out_at', 'status', 'description', 'extra'])]
 class Attendance extends Model
 {
     /** @use HasFactory<AttendanceFactory> */
@@ -37,6 +38,7 @@ class Attendance extends Model
         return [
             'clocked_in_at' => 'datetime',
             'clocked_out_at' => 'datetime',
+            'extra' => 'array',
         ];
     }
 
@@ -62,6 +64,7 @@ class Attendance extends Model
             'clockedOutAt' => $this->clocked_out_at?->toIso8601String(),
             'status' => $this->status,
             'description' => $this->description ?? '',
+            'extra' => $this->extra ?? [],
         ];
     }
 }

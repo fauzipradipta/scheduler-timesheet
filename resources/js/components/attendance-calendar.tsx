@@ -1,6 +1,7 @@
 import { useForm, useHttp } from '@inertiajs/react';
 import type { SyntheticEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ExtraColumnFields from '@/components/extra-column-fields';
 import { holidays as holidayRoute } from '@/routes/attendance';
 import { destroy, store } from '@/routes/attendance/entry';
 import type { Holiday, Holidays } from '@/types';
@@ -11,12 +12,16 @@ export type AttendanceEntry = {
     clockedOutAt: string | null;
     status: string;
     description: string;
+    /** Values for the columns the user's template adds, keyed by heading. */
+    extra: Record<string, string>;
 };
 
 type AttendanceCalendarProps = {
     entries: AttendanceEntry[];
     holidays: Holidays;
     holidayYear: number;
+    /** The headings the user's template adds after the remark column. */
+    templateColumns: string[];
 };
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -114,6 +119,7 @@ export default function AttendanceCalendar({
     entries,
     holidays,
     holidayYear,
+    templateColumns,
 }: AttendanceCalendarProps) {
     const [month, setMonth] = useState(() => {
         const today = new Date();
@@ -139,6 +145,8 @@ export default function AttendanceCalendar({
         startedAt: '09:00',
         endedAt: '17:00',
         description: '',
+        /** Project details rarely change between days, so start from the latest ones. */
+        extra: entries[0]?.extra ?? {},
     });
 
     const removal = useForm({});
@@ -385,6 +393,16 @@ export default function AttendanceCalendar({
                                                 {item.description}
                                             </p>
                                         )}
+                                        {Object.entries(item.extra).map(
+                                            ([label, value]) => (
+                                                <p
+                                                    key={label}
+                                                    className="mt-0.5 text-xs break-words text-[#706f6c] dark:text-[#A1A09A]"
+                                                >
+                                                    {label}: {value}
+                                                </p>
+                                            ),
+                                        )}
                                     </div>
                                     <button
                                         type="button"
@@ -472,6 +490,13 @@ export default function AttendanceCalendar({
                             maxLength={1000}
                             placeholder="Activity / remark"
                             className="w-full rounded-md border border-[#e3e3e0] bg-transparent px-3 py-2 text-sm outline-none placeholder:text-[#a3a29e] focus:border-[#1b1b18] dark:border-[#3E3E3A] dark:focus:border-[#EDEDEC]"
+                        />
+
+                        <ExtraColumnFields
+                            columns={templateColumns}
+                            values={form.data.extra}
+                            onChange={(values) => form.setData('extra', values)}
+                            idPrefix="day-extra"
                         />
 
                         {Object.values(form.errors).map((message) => (

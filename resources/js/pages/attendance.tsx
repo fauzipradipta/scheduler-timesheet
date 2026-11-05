@@ -1,9 +1,15 @@
-import { Head, Link, useForm, usePage } from '@inertiajs/react';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
 import type { SyntheticEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { destroy as logout } from '@/actions/App/Http/Controllers/Auth/AuthenticatedSessionController';
 import AttendanceCalendar from '@/components/attendance-calendar';
+import ExtraColumnFields from '@/components/extra-column-fields';
 import { download, store, upload } from '@/routes/attendance';
+import {
+    destroy as destroyTemplate,
+    store as storeTemplate,
+} from '@/routes/attendance/template';
+import { edit as profilePage } from '@/routes/profile';
 import type { Auth, Holidays } from '@/types';
 
 type AttendanceEntry = {
@@ -12,6 +18,8 @@ type AttendanceEntry = {
     clockedOutAt: string | null;
     status: string;
     description: string;
+    /** Values for the columns the user's template adds, keyed by heading. */
+    extra: Record<string, string>;
 };
 
 type AttendanceProps = {
@@ -19,6 +27,10 @@ type AttendanceProps = {
     activeEntry: AttendanceEntry | null;
     holidays: Holidays;
     holidayYear: number;
+    /** The file name of the user's own timesheet template, if they uploaded one. */
+    timesheetTemplate: string | null;
+    /** The headings the user's template adds after the remark column. */
+    templateColumns: string[];
 };
 
 function formatTime(isoDate: string): string {
@@ -72,20 +84,31 @@ export default function Attendance({
     activeEntry,
     holidays,
     holidayYear,
+    timesheetTemplate,
+    templateColumns,
 }: AttendanceProps) {
-    const { auth } = usePage<{ auth: Auth }>().props;
+    const { auth, errors: pageErrors } = usePage<{
+        auth: Auth;
+        errors: Record<string, string>;
+    }>().props;
     const [now, setNow] = useState(() => Date.now());
     /** Entries arrive newest first, so the latest day is the month worth offering. */
     const [downloadMonth, setDownloadMonth] = useState(() =>
         monthOf(entries[0] ? new Date(entries[0].clockedInAt) : new Date()),
     );
     const fileInput = useRef<HTMLInputElement>(null);
+    const templateInput = useRef<HTMLInputElement>(null);
     const { data, setData, transform, submit, processing, errors, reset } =
         useForm({
             action: activeEntry ? 'clock-out' : 'clock-in',
             description: '',
+            /** Project details rarely change between days, so start from the latest ones. */
+            extra: (activeEntry ?? entries[0])?.extra ?? {},
         });
     const uploadForm = useForm<{ file: File | null }>({ file: null });
+    const templateForm = useForm<{ template: File | null }>({
+        template: null,
+    });
 
     useEffect(() => {
         const ticker = window.setInterval(() => setNow(Date.now()), 1000);
@@ -114,7 +137,8 @@ export default function Attendance({
 
         submit(store(), {
             preserveScroll: true,
-            onSuccess: () => reset(),
+            /** The extra columns are kept for the next shift; only the note is cleared. */
+            onSuccess: () => reset('description'),
         });
     };
 
@@ -150,6 +174,38 @@ export default function Attendance({
         });
     };
 
+    const handleTemplateUpload = (file: File | undefined) => {
+        if (!file) {
+            return;
+        }
+
+        templateForm.transform(() => ({ template: file }));
+        templateForm.submit(storeTemplate(), {
+            preserveScroll: true,
+            onFinish: () => {
+                templateForm.reset();
+
+                if (templateInput.current) {
+                    templateInput.current.value = '';
+                }
+            },
+        });
+    };
+
+    const handleTemplateRemove = () => {
+        if (
+            !window.confirm(
+                `Remove ${timesheetTemplate}? Timesheets cannot be downloaded until another template is uploaded.`,
+            )
+        ) {
+            return;
+        }
+
+        router.visit(destroyTemplate(), { preserveScroll: true });
+    };
+
+    const templateError = templateForm.errors.template ?? pageErrors.template;
+
     return (
         <>
             <Head title="Attendance" />
@@ -173,6 +229,12 @@ export default function Attendance({
                                     {auth.user.name}
                                 </p>
                             </div>
+                            <Link
+                                href={profilePage()}
+                                className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
+                            >
+                                Profile
+                            </Link>
                             <Link
                                 href={logout()}
                                 as="button"
@@ -254,6 +316,22 @@ export default function Attendance({
                                     {errors.description}
                                 </p>
                             )}
+                            <ExtraColumnFields
+                                columns={templateColumns}
+                                values={data.extra}
+                                onChange={(values) => setData('extra', values)}
+                                idPrefix="clock-extra"
+                            />
+                            {Object.entries(errors)
+                                .filter(([field]) => field.startsWith('extra'))
+                                .map(([field, message]) => (
+                                    <p
+                                        key={field}
+                                        className="text-sm text-[#f53003] dark:text-[#FF4433]"
+                                    >
+                                        {message}
+                                    </p>
+                                ))}
                             {errors.action && (
                                 <p className="text-sm text-[#f53003] dark:text-[#FF4433]">
                                     {errors.action}
@@ -276,6 +354,7 @@ export default function Attendance({
 
                     <AttendanceCalendar
                         entries={entries}
+                        templateColumns={templateColumns}
                         holidays={holidays}
                         holidayYear={holidayYear}
                     />
@@ -314,35 +393,87 @@ export default function Attendance({
                                             ? 'Uploading…'
                                             : 'Upload timesheet'}
                                     </button>
-                                    {entries.length > 0 && (
-                                        <>
-                                            <input
-                                                type="month"
-                                                value={downloadMonth}
-                                                onChange={(event) =>
-                                                    setDownloadMonth(
-                                                        event.target.value,
-                                                    )
-                                                }
-                                                aria-label="Timesheet month"
-                                                className="rounded-sm border border-[#e3e3e0] bg-transparent px-2 py-1 text-sm dark:border-[#3E3E3A]"
-                                            />
-                                            <a
-                                                href={download.url({
-                                                    query: {
-                                                        month: downloadMonth,
-                                                    },
-                                                })}
-                                                download
-                                                className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
-                                            >
-                                                Download timesheet
-                                            </a>
-                                        </>
-                                    )}
+                                    {entries.length > 0 &&
+                                        timesheetTemplate && (
+                                            <>
+                                                <input
+                                                    type="month"
+                                                    value={downloadMonth}
+                                                    onChange={(event) =>
+                                                        setDownloadMonth(
+                                                            event.target.value,
+                                                        )
+                                                    }
+                                                    aria-label="Timesheet month"
+                                                    className="rounded-sm border border-[#e3e3e0] bg-transparent px-2 py-1 text-sm dark:border-[#3E3E3A]"
+                                                />
+                                                <a
+                                                    href={download.url({
+                                                        query: {
+                                                            month: downloadMonth,
+                                                        },
+                                                    })}
+                                                    download
+                                                    className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
+                                                >
+                                                    Download timesheet
+                                                </a>
+                                            </>
+                                        )}
                                 </div>
                             </div>
                         </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[#706f6c] dark:text-[#A1A09A]">
+                            <input
+                                ref={templateInput}
+                                type="file"
+                                accept=".xlsx"
+                                className="hidden"
+                                onChange={(event) =>
+                                    handleTemplateUpload(
+                                        event.target.files?.[0],
+                                    )
+                                }
+                            />
+                            <span>
+                                Template:{' '}
+                                {timesheetTemplate ? (
+                                    <span className="font-medium text-[#1b1b18] dark:text-[#EDEDEC]">
+                                        {timesheetTemplate}
+                                    </span>
+                                ) : (
+                                    'none yet. Upload one to download timesheets.'
+                                )}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => templateInput.current?.click()}
+                                disabled={templateForm.processing}
+                                className="underline underline-offset-4 hover:text-[#1b1b18] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-[#EDEDEC]"
+                            >
+                                {templateForm.processing
+                                    ? 'Uploading…'
+                                    : timesheetTemplate
+                                      ? 'Replace'
+                                      : 'Upload template'}
+                            </button>
+                            {timesheetTemplate && (
+                                <button
+                                    type="button"
+                                    onClick={handleTemplateRemove}
+                                    className="underline underline-offset-4 hover:text-[#1b1b18] dark:hover:text-[#EDEDEC]"
+                                >
+                                    Remove
+                                </button>
+                            )}
+                        </div>
+
+                        {templateError && (
+                            <p className="mt-3 text-sm text-[#f53003] dark:text-[#FF4433]">
+                                {templateError}
+                            </p>
+                        )}
 
                         {uploadForm.errors.file && (
                             <p className="mt-3 text-sm text-[#f53003] dark:text-[#FF4433]">

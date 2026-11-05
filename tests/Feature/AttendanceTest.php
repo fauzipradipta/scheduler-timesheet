@@ -6,6 +6,7 @@ use Illuminate\Http\Testing\File;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\TestResponse;
 
 /** The attendance routes now sit behind the auth middleware. */
@@ -16,7 +17,26 @@ beforeEach(function () {
 
     /** The days off are read from Google, which the suite must never call. */
     fakeHolidayFeed();
+
+    /** Every export is filled into the user's own template, so they start with one. */
+    Storage::fake('local');
+    giveTimesheetTemplate($this->user);
 });
+
+/**
+ * Store a workbook as the given user's timesheet template, the way an upload does.
+ */
+function giveTimesheetTemplate(User $user, ?string $contents = null): void
+{
+    $path = 'timesheet-templates/'.$user->id.'.xlsx';
+
+    Storage::disk('local')->put($path, $contents ?? (string) file_get_contents(base_path('tests/Fixtures/timesheet-template.xlsx')));
+
+    $user->forceFill([
+        'timesheet_template_path' => $path,
+        'timesheet_template_name' => 'timesheet.xlsx',
+    ])->save();
+}
 
 /**
  * Answer the holiday feed with the 2026 calendar the fixture holds. A second

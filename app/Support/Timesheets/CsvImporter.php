@@ -114,6 +114,7 @@ class CsvImporter
             'clockedOutAt' => $clockedOutAt?->toIso8601String(),
             'status' => TimesheetLayout::PRESENT,
             'description' => $description,
+            'extra' => [],
         ];
     }
 
