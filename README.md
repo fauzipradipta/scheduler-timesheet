@@ -139,11 +139,3 @@ mailbox, so anyone who knows a registered address can take that account over.
 Attempts are throttled to three per address and IP every 15 minutes, which
 slows an attacker down but does not stop one who already knows a real address.
 This is fine on a private network and is not safe facing the internet.
-
-**`composer ci:check` fails on a clean checkout.** Prettier flags the generated
-Wayfinder files under `resources/js/actions` and `resources/js/routes`. Adding
-those two directories to `.prettierignore` fixes it, since nobody writes those
-files by hand.
-
-**The GitHub Actions workflow never runs.** It triggers on pushes to `main`,
-while the branch is `master`.

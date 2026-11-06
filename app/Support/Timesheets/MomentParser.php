@@ -78,7 +78,7 @@ class MomentParser
             return $this->clockToSeconds(
                 $this->hourOnATwelveHourClock((int) $parts[1], strtolower($parts[4])),
                 (int) $parts[2],
-                (int) ($parts[3] ?? 0),
+                (int) $parts[3],
             );
         }
 
@@ -156,7 +156,7 @@ class MomentParser
                 continue;
             }
 
-            if ($moment !== false) {
+            if ($moment !== null) {
                 return $moment->startOfDay();
             }
         }
