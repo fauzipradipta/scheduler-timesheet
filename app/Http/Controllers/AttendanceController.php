@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Attendance;
+use App\Models\User;
 use App\Support\HolidayCalendar;
 use App\Support\Timesheets\CsvImporter;
 use App\Support\Timesheets\TemplateImporter;
@@ -25,25 +26,34 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use ZipArchive;
 
 /**
- * @phpstan-type Entry array{id: string, clockedInAt: string, clockedOutAt: string|null, status: string, description: string}
+ * @phpstan-type Entry array{id: string, clockedInAt: string, clockedOutAt: string|null, status: string, description: string, extra: array<string, string>}
  *
  * @phpstan-import-type Holiday from HolidayCalendar
  */
 class AttendanceController extends Controller
 {
     /**
-     * The signature block's date lines, which the template writes as plain text.
-     *
-     * @var list<string>
+     * The light grey weekends are painted with: Excel's white darkened by a
+     * quarter. A template that already carries it keeps its own fill; one that
+     * does not is given this fill.
      */
-    private const SIGNATURE_DATE_CELLS = ['B55', 'F55', 'J55'];
+    private const WEEKEND_GREY = 'FFD9D9D9';
 
     /**
-     * The light grey the template already paints its weekends with.
+     * Excel reserves the first fill of every workbook for "no fill".
      */
-    private const WEEKEND_FILL = 4;
-
     private const PLAIN_FILL = 0;
+
+    /**
+     * The values a day carries for the columns the user's template adds,
+     * keyed by each column's heading.
+     *
+     * @var array<string, list<string>>
+     */
+    private const EXTRA_RULES = [
+        'extra' => ['nullable', 'array'],
+        'extra.*' => ['nullable', 'string', 'max:255'],
+    ];
 
     /**
      * The table body the weekend shading spans. The date column is left out
@@ -71,6 +81,10 @@ class AttendanceController extends Controller
             'activeEntry' => $this->activeEntry($entries),
             'holidays' => $calendar->forYear($year),
             'holidayYear' => $year,
+            'timesheetTemplate' => $request->user()->timesheetTemplatePath() !== null
+                ? $request->user()->timesheet_template_name
+                : null,
+            'templateColumns' => array_column($request->user()->timesheetTemplateColumns(), 'label'),
         ]);
     }
 
@@ -94,14 +108,16 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'action' => ['required', 'in:clock-in,clock-out'],
             'description' => ['nullable', 'string', 'max:1000'],
+            ...self::EXTRA_RULES,
         ]);
 
         $description = trim((string) ($validated['description'] ?? ''));
+        $extra = $this->extraValues($request, $validated['extra'] ?? []);
 
         if ($validated['action'] === 'clock-in') {
-            $this->clockIn($request, $description);
+            $this->clockIn($request, $description, $extra);
         } else {
-            $this->clockOut($request, $description);
+            $this->clockOut($request, $description, $extra);
         }
 
         return to_route('attendance.index');
@@ -120,6 +136,7 @@ class AttendanceController extends Controller
             'startedAt' => ['required_if:status,'.TimesheetLayout::PRESENT, 'nullable', 'date_format:H:i'],
             'endedAt' => ['nullable', 'date_format:H:i'],
             'description' => ['nullable', 'string', 'max:1000'],
+            ...self::EXTRA_RULES,
         ]);
 
         $present = $validated['status'] === TimesheetLayout::PRESENT;
@@ -150,6 +167,7 @@ class AttendanceController extends Controller
             'clocked_out_at' => $clockedOutAt,
             'status' => $validated['status'],
             'description' => trim((string) ($validated['description'] ?? '')),
+            'extra' => $this->extraValues($request, $validated['extra'] ?? []),
         ]);
 
         return to_route('attendance.index');
@@ -166,7 +184,9 @@ class AttendanceController extends Controller
     }
 
     /**
-     * Hand back a copy of the timesheet template with the attendance columns filled in.
+     * Hand back a copy of the user's timesheet template with the attendance columns filled in.
+     *
+     * @throws ValidationException
      */
     public function download(Request $request, HolidayCalendar $calendar): BinaryFileResponse
     {
@@ -174,9 +194,17 @@ class AttendanceController extends Controller
             'month' => ['nullable', 'date_format:Y-m'],
         ]);
 
+        $template = $request->user()->timesheetTemplatePath();
+
+        if ($template === null) {
+            throw ValidationException::withMessages([
+                'template' => 'Upload a timesheet template before downloading a timesheet.',
+            ]);
+        }
+
         $month = Carbon::createFromFormat('Y-m', $validated['month'] ?? now()->format('Y-m'))->startOfMonth();
 
-        $path = $this->fill($this->entries($request), $month, $calendar->forYear((int) $month->year));
+        $path = $this->fill($request->user(), $template, $this->entries($request), $month, $calendar->forYear((int) $month->year));
 
         return response()
             ->download($path, 'timesheet-'.$month->format('Y-m').'.xlsx')
@@ -224,6 +252,7 @@ class AttendanceController extends Controller
                 'clocked_out_at' => $entry['clockedOutAt'] !== null ? Carbon::parse($entry['clockedOutAt']) : null,
                 'status' => $entry['status'],
                 'description' => $entry['description'],
+                'extra' => $entry['extra'],
             ], $entries));
         });
 
@@ -295,14 +324,8 @@ class AttendanceController extends Controller
      * @param  array<string, Holiday>  $holidays
      * @return string the path of the filled copy
      */
-    private function fill(array $entries, Carbon $month, array $holidays): string
+    private function fill(User $user, string $template, array $entries, Carbon $month, array $holidays): string
     {
-        $template = resource_path('templates/timesheet.xlsx');
-
-        if (! is_file($template)) {
-            throw new RuntimeException("The timesheet template is missing from {$template}.");
-        }
-
         $path = tempnam(sys_get_temp_dir(), 'timesheet');
 
         if ($path === false || ! copy($template, $path)) {
@@ -337,13 +360,19 @@ class AttendanceController extends Controller
         /** The clones are only meaningful for this workbook's style table. */
         $this->styleVariants = [];
 
+        $weekendFill = $this->weekendFill($styles);
+
         $byDate = $this->groupByDate($entries);
 
         /** The template writes its own period heading from a date serial. */
         $this->setNumber($document, $xpath, TimesheetLayout::PERIOD_CELL, $this->serialFromDate($month));
 
+        $this->fillProfile($document, $xpath, $user);
+
+        $columns = $user->timesheetTemplateColumns();
+
         /** A sheet is signed on the day it is taken, whichever month it covers. */
-        foreach (self::SIGNATURE_DATE_CELLS as $reference) {
+        foreach (TimesheetLayout::SIGNATURE_DATE_CELLS as $reference) {
             $this->setText($document, $xpath, $reference, 'DATE: '.now()->format('d/m/Y'));
         }
 
@@ -354,7 +383,7 @@ class AttendanceController extends Controller
 
             /** The template holds 31 day rows, so a shorter month leaves spares to clear. */
             if ($dayOfMonth > $daysInMonth) {
-                $this->clearRow($xpath, $row);
+                $this->clearRow($xpath, $row, $columns);
                 $this->shadeRow($xpath, $cellXfs, $row, self::PLAIN_FILL);
 
                 continue;
@@ -375,7 +404,7 @@ class AttendanceController extends Controller
                 $xpath,
                 $cellXfs,
                 $row,
-                $date->isWeekend() || $holiday !== null ? self::WEEKEND_FILL : self::PLAIN_FILL,
+                $date->isWeekend() || $holiday !== null ? $weekendFill : self::PLAIN_FILL,
             );
 
             $day = $byDate[$key] ?? [];
@@ -389,7 +418,7 @@ class AttendanceController extends Controller
                 continue;
             }
 
-            $this->fillRow($document, $xpath, $row, $day);
+            $this->fillRow($document, $xpath, $row, $day, $columns);
         }
 
         $zip->addFromString('xl/worksheets/sheet1.xml', (string) $document->saveXML());
@@ -407,8 +436,9 @@ class AttendanceController extends Controller
      * A day may hold several clock ins, so the row spans the first start to the last end.
      *
      * @param  non-empty-list<Entry>  $day
+     * @param  list<array{column: string, label: string}>  $columns
      */
-    private function fillRow(DOMDocument $document, DOMXPath $xpath, int $row, array $day): void
+    private function fillRow(DOMDocument $document, DOMXPath $xpath, int $row, array $day, array $columns): void
     {
         usort($day, fn (array $first, array $second): int => strcmp($first['clockedInAt'], $second['clockedInAt']));
 
@@ -442,6 +472,18 @@ class AttendanceController extends Controller
 
         if ($remark !== '') {
             $this->setText($document, $xpath, TimesheetLayout::REMARK_COLUMN.$row, $remark);
+        }
+
+        /** A column the template added reads like the remark: every distinct value of the day. */
+        foreach ($columns as $column) {
+            $value = implode('; ', array_unique(array_filter(array_map(
+                fn (array $entry): string => trim($entry['extra'][$column['label']] ?? ''),
+                $day,
+            ))));
+
+            if ($value !== '') {
+                $this->setText($document, $xpath, $column['column'].$row, $value);
+            }
         }
     }
 
@@ -505,6 +547,61 @@ class AttendanceController extends Controller
     }
 
     /**
+     * The index of the weekend grey in the workbook's fill table. A light grey
+     * the template already uses is reused, so a template painted by hand keeps
+     * its own shade; otherwise the grey is added to the end of the table.
+     */
+    private function weekendFill(DOMDocument $styles): int
+    {
+        $fills = $styles->getElementsByTagName('fills')->item(0);
+
+        if (! $fills instanceof DOMElement) {
+            throw new RuntimeException('The timesheet template has no fill table.');
+        }
+
+        $entries = $fills->getElementsByTagName('fill');
+
+        foreach ($entries as $index => $fill) {
+            $pattern = $fill->getElementsByTagName('patternFill')->item(0);
+            $color = $pattern?->getElementsByTagName('fgColor')->item(0);
+
+            if (! $pattern instanceof DOMElement || ! $color instanceof DOMElement || $pattern->getAttribute('patternType') !== 'solid') {
+                continue;
+            }
+
+            $quarterDarkerWhite = $color->getAttribute('theme') === '0'
+                && abs((float) $color->getAttribute('tint') + 0.25) < 0.01;
+
+            if ($quarterDarkerWhite || strtoupper($color->getAttribute('rgb')) === self::WEEKEND_GREY) {
+                return $index;
+            }
+        }
+
+        /** The list is live, so its length before the append is the new fill's index. */
+        $index = $entries->length;
+
+        $namespace = TimesheetLayout::SPREADSHEET_NAMESPACE;
+
+        $pattern = $styles->createElementNS($namespace, 'patternFill');
+        $pattern->setAttribute('patternType', 'solid');
+
+        $color = $styles->createElementNS($namespace, 'fgColor');
+        $color->setAttribute('rgb', self::WEEKEND_GREY);
+        $pattern->appendChild($color);
+
+        $background = $styles->createElementNS($namespace, 'bgColor');
+        $background->setAttribute('indexed', '64');
+        $pattern->appendChild($background);
+
+        $fill = $styles->createElementNS($namespace, 'fill');
+        $fill->appendChild($pattern);
+        $fills->appendChild($fill);
+        $fills->setAttribute('count', (string) ($index + 1));
+
+        return $index;
+    }
+
+    /**
      * Repaint a day row's background, keeping every other part of each cell's
      * format - its borders, fonts and number formats - exactly as it was.
      */
@@ -565,8 +662,10 @@ class AttendanceController extends Controller
     /**
      * Blank every cell the attendance log writes to, so the template's spare
      * rows do not keep a day that the requested month does not have.
+     *
+     * @param  list<array{column: string, label: string}>  $extraColumns
      */
-    private function clearRow(DOMXPath $xpath, int $row): void
+    private function clearRow(DOMXPath $xpath, int $row, array $extraColumns): void
     {
         $columns = [
             TimesheetLayout::DATE_COLUMN,
@@ -575,6 +674,7 @@ class AttendanceController extends Controller
             TimesheetLayout::TOTAL_COLUMN,
             ...array_values(TimesheetLayout::STATUSES),
             TimesheetLayout::REMARK_COLUMN,
+            ...array_column($extraColumns, 'column'),
         ];
 
         foreach ($columns as $column) {
@@ -678,7 +778,7 @@ class AttendanceController extends Controller
                 continue;
             }
 
-            if ($this->columnIndex($siblingColumn[1]) > $this->columnIndex($matches[1])) {
+            if (TimesheetLayout::columnIndex($siblingColumn[1]) > TimesheetLayout::columnIndex($matches[1])) {
                 $row->insertBefore($cell, $sibling);
 
                 return $cell;
@@ -688,17 +788,6 @@ class AttendanceController extends Controller
         $row->appendChild($cell);
 
         return $cell;
-    }
-
-    private function columnIndex(string $column): int
-    {
-        $index = 0;
-
-        foreach (str_split($column) as $letter) {
-            $index = ($index * 26) + (ord($letter) - ord('A') + 1);
-        }
-
-        return $index;
     }
 
     private function find(DOMXPath $xpath, string $expression): ?DOMElement
@@ -734,11 +823,54 @@ class AttendanceController extends Controller
     }
 
     /**
+     * Keep only the values for columns the user's template actually has, so a
+     * stale form cannot store a heading the export would never write.
+     *
+     * @param  array<array-key, mixed>  $values
+     * @return array<string, string>
+     */
+    private function extraValues(Request $request, array $values): array
+    {
+        $extra = [];
+
+        foreach (array_column($request->user()->timesheetTemplateColumns(), 'label') as $label) {
+            $value = trim((string) ($values[$label] ?? ''));
+
+            if ($value !== '') {
+                $extra[$label] = $value;
+            }
+        }
+
+        return $extra;
+    }
+
+    /**
+     * Write the employee block and the employee's signature name from their
+     * profile. A detail the profile leaves blank keeps the template's own text.
+     */
+    private function fillProfile(DOMDocument $document, DOMXPath $xpath, User $user): void
+    {
+        foreach (TimesheetLayout::PROFILE_CELLS as $field => $reference) {
+            $value = trim((string) $user->getAttribute($field));
+
+            if ($value !== '') {
+                $this->setText($document, $xpath, $reference, ': '.$value);
+            }
+        }
+
+        if (trim($user->name) !== '') {
+            $this->setText($document, $xpath, TimesheetLayout::SIGNATURE_NAME_CELL, '('.trim($user->name).')');
+        }
+    }
+
+    /**
      * Open a new entry for the signed in user.
+     *
+     * @param  array<string, string>  $extra
      *
      * @throws ValidationException
      */
-    private function clockIn(Request $request, string $description): void
+    private function clockIn(Request $request, string $description, array $extra): void
     {
         if ($this->openEntry($request) !== null) {
             throw ValidationException::withMessages([
@@ -751,15 +883,18 @@ class AttendanceController extends Controller
             'clocked_out_at' => null,
             'status' => TimesheetLayout::PRESENT,
             'description' => $description,
+            'extra' => $extra,
         ]);
     }
 
     /**
      * Close the open entry, keeping its original description when no new one is written.
      *
+     * @param  array<string, string>  $extra
+     *
      * @throws ValidationException
      */
-    private function clockOut(Request $request, string $description): void
+    private function clockOut(Request $request, string $description, array $extra): void
     {
         $openEntry = $this->openEntry($request);
 
@@ -772,6 +907,8 @@ class AttendanceController extends Controller
         $openEntry->update([
             'clocked_out_at' => now(),
             'description' => $description !== '' ? $description : $openEntry->description,
+            /** Like the description, a value left blank on the way out keeps the one given on the way in. */
+            'extra' => [...($openEntry->extra ?? []), ...$extra],
         ]);
     }
 

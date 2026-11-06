@@ -4,6 +4,8 @@ use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Auth\RegisteredUserController;
 use App\Http\Controllers\Auth\ResetPasswordController;
+use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\TimesheetTemplateController;
 use Illuminate\Support\Facades\Route;
 
 Route::redirect('/', '/login')->name('home');
@@ -21,11 +23,17 @@ Route::middleware('guest')->group(function () {
 Route::middleware('auth')->group(function () {
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
 
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::put('/profile/password', [ProfileController::class, 'updatePassword'])->name('profile.password.update');
+
     Route::get('/attendance', [AttendanceController::class, 'index'])->name('attendance.index');
     Route::post('/attendance', [AttendanceController::class, 'store'])->name('attendance.store');
     Route::get('/attendance/download', [AttendanceController::class, 'download'])->name('attendance.download');
     Route::get('/attendance/holidays', [AttendanceController::class, 'holidays'])->name('attendance.holidays');
     Route::post('/attendance/upload', [AttendanceController::class, 'upload'])->name('attendance.upload');
+    Route::post('/attendance/template', [TimesheetTemplateController::class, 'store'])->name('attendance.template.store');
+    Route::delete('/attendance/template', [TimesheetTemplateController::class, 'destroy'])->name('attendance.template.destroy');
     Route::post('/attendance/entry', [AttendanceController::class, 'storeEntry'])->name('attendance.entry.store');
     Route::delete('/attendance/entry/{entry}', [AttendanceController::class, 'destroyEntry'])->name('attendance.entry.destroy');
 });

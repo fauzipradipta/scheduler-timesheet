@@ -13,11 +13,19 @@ as a filled `.xlsx` that matches the company template.
   working.
 - **See the month on a calendar**, with Indonesian public holidays and joint
   leave (*cuti bersama*) already on it.
-- **Export the month** as an `.xlsx` built from `resources/templates/timesheet.xlsx`,
-  so the logo, header, totals, and signature blocks stay exactly as the
-  template author wrote them.
+- **Export the month** as an `.xlsx` filled into the timesheet template each
+  user uploads, so the logo, header, totals, and signature blocks stay exactly
+  as the template author wrote them. A template must keep the standard layout:
+  the employee details in `B4` to `B7`, the period in `B8`, one day per row
+  from row 11 to 41 (date, start, end, total, the status columns `E` to `J`,
+  and the remark in `K`), and the signature name and dates in rows 54 and 55.
+- **Fill the template's own columns.** Any heading a template adds in row 9 or
+  10 to the right of `K` (such as Project Name or Project Code) becomes a field
+  on the clock and calendar forms, and its values land in that column.
+- **Keep a profile.** Name, NTT ID, project, and division are edited on the
+  profile page and written into the header of every export.
 - **Import a timesheet** back in, from `.xlsx` or CSV, replacing the stored
-  entries.
+  entries. An `.xlsx` brings its added columns back with it.
 
 Holidays come from Google's public Indonesian calendar feed. The dates cannot
 be computed, because they mix the Hijri, Saka, Chinese lunar, and Christian
@@ -85,7 +93,10 @@ If a change to the frontend does not show up, the Vite build is stale. Run
 | `app/Http/Controllers/AttendanceController.php` | Clock in and out, day entries, import, export |
 | `app/Support/HolidayCalendar.php` | The Indonesian holiday feed, parsed and cached |
 | `resources/js/pages` | Inertia pages, one file per screen |
-| `resources/templates/timesheet.xlsx` | The workbook the export fills in |
+| `app/Http/Controllers/TimesheetTemplateController.php` | Upload and removal of each user's template |
+| `app/Rules/FollowsTimesheetLayout.php` | The layout check an uploaded template must pass |
+| `app/Support/Timesheets/TemplateColumns.php` | Finds the columns a template adds after the remark |
+| `app/Http/Controllers/ProfileController.php` | The profile page and password change |
 | `deploy/` | VPS provisioning and release scripts |
 
 Routes are all in `routes/web.php`. There is no `routes/api.php`.
@@ -128,11 +139,3 @@ mailbox, so anyone who knows a registered address can take that account over.
 Attempts are throttled to three per address and IP every 15 minutes, which
 slows an attacker down but does not stop one who already knows a real address.
 This is fine on a private network and is not safe facing the internet.
-
-**`composer ci:check` fails on a clean checkout.** Prettier flags the generated
-Wayfinder files under `resources/js/actions` and `resources/js/routes`. Adding
-those two directories to `.prettierignore` fixes it, since nobody writes those
-files by hand.
-
-**The GitHub Actions workflow never runs.** It triggers on pushes to `main`,
-while the branch is `master`.
