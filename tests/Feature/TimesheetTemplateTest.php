@@ -202,6 +202,78 @@ test('a template without the weekend grey is given one', function () {
 });
 
 /**
+ * Resolve the background fill each cell of a downloaded first worksheet paints with.
+ *
+ * @return array<string, int>
+ */
+function downloadedFills(TestResponse $response): array
+{
+    $styles = new DOMDocument;
+    $styles->loadXML(downloadedPart($response, 'xl/styles.xml'));
+    $sheet = new DOMDocument;
+    $sheet->loadXML(downloadedPart($response, 'xl/worksheets/sheet1.xml'));
+
+    $fillOf = [];
+
+    foreach ($styles->getElementsByTagName('cellXfs')->item(0)->getElementsByTagName('xf') as $format) {
+        $fillOf[] = (int) $format->getAttribute('fillId');
+    }
+
+    $painted = [];
+
+    foreach ($sheet->getElementsByTagName('c') as $cell) {
+        $painted[$cell->getAttribute('r')] = $fillOf[(int) $cell->getAttribute('s')] ?? 0;
+    }
+
+    return $painted;
+}
+
+test('a date column the template shades by the calendar follows the month', function () {
+    /** Give every date the plain format of K13, the way a template shaded by the calendar lays them out. */
+    uploadTemplate(editedTemplate([
+        'xl/worksheets/sheet1.xml' => fn (string $sheet): string => (string) preg_replace(
+            '#<c r="(A(?:1[1-9]|[23]\d|4[01]))" s="\d+"#',
+            '<c r="$1" s="61"',
+            $sheet,
+        ),
+    ]));
+
+    $painted = downloadedFills($this->get(route('attendance.download', ['month' => '2026-08'])));
+
+    /** August 2026 opens on a Saturday, so its first two dates are grey and the Monday is plain. */
+    expect($painted['A11'])->toBe(4)
+        ->and($painted['A12'])->toBe(4)
+        ->and($painted['A13'])->toBe(0);
+});
+
+test('a date column the template greys on every row keeps its grey', function () {
+    uploadTemplate(templateFixture());
+
+    $painted = downloadedFills($this->get(route('attendance.download', ['month' => '2026-08'])));
+
+    expect($painted['A11'])->toBe(6)
+        ->and($painted['A13'])->toBe(6);
+});
+
+test('a column the template adds past the fixed table is shaded with it', function () {
+    uploadTemplate(editedTemplate([
+        'xl/worksheets/sheet1.xml' => fn (string $sheet): string => str_replace(
+            '<c r="O9" s="1"/>',
+            '<c r="O9" s="1" t="inlineStr"><is><t>Impacted Application</t></is></c>',
+            $sheet,
+        ),
+    ]));
+
+    expect(array_column($this->user->refresh()->timesheet_template_columns, 'column'))->toContain('O');
+
+    $painted = downloadedFills($this->get(route('attendance.download', ['month' => '2026-08'])));
+
+    expect($painted['O11'])->toBe(4)
+        ->and($painted['O12'])->toBe(4)
+        ->and($painted['O13'])->toBe(0);
+});
+
+/**
  * The text or number each cell of a downloaded first worksheet holds.
  *
  * @return array<string, string>
@@ -362,19 +434,4 @@ test('the download writes the profile into the header and the signature', functi
         ->and($cells['B6'])->toBe(': Ada Lovelace')
         ->and($cells['B7'])->toBe(': NTT000001')
         ->and($cells['B54'])->toBe('(Ada Lovelace)');
-});
-
-test('extra column values round trip through a downloaded timesheet', function () {
-    uploadTemplate(templateFixture());
-
-    loggedDay('2026-08-05T09:00:00+00:00', '2026-08-05T17:00:00+00:00', ['Project Name' => 'Digisales', 'Application Name' => 'Portal']);
-
-    $response = $this->get(route('attendance.download', ['month' => '2026-08']));
-    $workbook = (string) file_get_contents($response->baseResponse->getFile()->getPathname());
-
-    $this->post(route('attendance.upload'), [
-        'file' => UploadedFile::fake()->createWithContent('timesheet.xlsx', $workbook),
-    ])->assertSessionHasNoErrors();
-
-    expect($this->user->attendances()->sole()->extra)->toBe(['Project Name' => 'Digisales', 'Application Name' => 'Portal']);
 });

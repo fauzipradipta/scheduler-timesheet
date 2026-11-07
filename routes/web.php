@@ -31,7 +31,6 @@ Route::middleware('auth')->group(function () {
     Route::post('/attendance', [AttendanceController::class, 'store'])->name('attendance.store');
     Route::get('/attendance/download', [AttendanceController::class, 'download'])->name('attendance.download');
     Route::get('/attendance/holidays', [AttendanceController::class, 'holidays'])->name('attendance.holidays');
-    Route::post('/attendance/upload', [AttendanceController::class, 'upload'])->name('attendance.upload');
     Route::post('/attendance/template', [TimesheetTemplateController::class, 'store'])->name('attendance.template.store');
     Route::delete('/attendance/template', [TimesheetTemplateController::class, 'destroy'])->name('attendance.template.destroy');
     Route::post('/attendance/entry', [AttendanceController::class, 'storeEntry'])->name('attendance.entry.store');

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { destroy as logout } from '@/actions/App/Http/Controllers/Auth/AuthenticatedSessionController';
 import AttendanceCalendar from '@/components/attendance-calendar';
 import ExtraColumnFields from '@/components/extra-column-fields';
-import { download, store, upload } from '@/routes/attendance';
+import { download, store } from '@/routes/attendance';
 import {
     destroy as destroyTemplate,
     store as storeTemplate,
@@ -96,7 +96,6 @@ export default function Attendance({
     const [downloadMonth, setDownloadMonth] = useState(() =>
         monthOf(entries[0] ? new Date(entries[0].clockedInAt) : new Date()),
     );
-    const fileInput = useRef<HTMLInputElement>(null);
     const templateInput = useRef<HTMLInputElement>(null);
     const { data, setData, transform, submit, processing, errors, reset } =
         useForm({
@@ -105,7 +104,6 @@ export default function Attendance({
             /** Project details rarely change between days, so start from the latest ones. */
             extra: (activeEntry ?? entries[0])?.extra ?? {},
         });
-    const uploadForm = useForm<{ file: File | null }>({ file: null });
     const templateForm = useForm<{ template: File | null }>({
         template: null,
     });
@@ -139,38 +137,6 @@ export default function Attendance({
             preserveScroll: true,
             /** The extra columns are kept for the next shift; only the note is cleared. */
             onSuccess: () => reset('description'),
-        });
-    };
-
-    const handleUpload = (file: File | undefined) => {
-        if (!file) {
-            return;
-        }
-
-        /** An upload rewrites every day the file carries, so say so first. */
-        if (
-            entries.length > 0 &&
-            !window.confirm(
-                `Import ${file.name}? Every day the file covers is replaced by its rows. Days it leaves out are kept.`,
-            )
-        ) {
-            if (fileInput.current) {
-                fileInput.current.value = '';
-            }
-
-            return;
-        }
-
-        uploadForm.transform(() => ({ file }));
-        uploadForm.submit(upload(), {
-            preserveScroll: true,
-            onFinish: () => {
-                uploadForm.reset();
-
-                if (fileInput.current) {
-                    fileInput.current.value = '';
-                }
-            },
         });
     };
 
@@ -370,29 +336,6 @@ export default function Attendance({
                                     </span>
                                 </p>
                                 <div className="flex items-center gap-2">
-                                    <input
-                                        ref={fileInput}
-                                        type="file"
-                                        accept=".xlsx,.csv"
-                                        className="hidden"
-                                        onChange={(event) =>
-                                            handleUpload(
-                                                event.target.files?.[0],
-                                            )
-                                        }
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() =>
-                                            fileInput.current?.click()
-                                        }
-                                        disabled={uploadForm.processing}
-                                        className="rounded-sm border border-[#e3e3e0] px-3 py-1 text-sm hover:border-[#1b1b18] disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#3E3E3A] dark:hover:border-[#EDEDEC]"
-                                    >
-                                        {uploadForm.processing
-                                            ? 'Uploading…'
-                                            : 'Upload timesheet'}
-                                    </button>
                                     {entries.length > 0 &&
                                         timesheetTemplate && (
                                             <>
@@ -472,12 +415,6 @@ export default function Attendance({
                         {templateError && (
                             <p className="mt-3 text-sm text-[#f53003] dark:text-[#FF4433]">
                                 {templateError}
-                            </p>
-                        )}
-
-                        {uploadForm.errors.file && (
-                            <p className="mt-3 text-sm text-[#f53003] dark:text-[#FF4433]">
-                                {uploadForm.errors.file}
                             </p>
                         )}
 

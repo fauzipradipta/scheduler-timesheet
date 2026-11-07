@@ -5,18 +5,14 @@ namespace App\Http\Controllers;
 use App\Models\Attendance;
 use App\Models\User;
 use App\Support\HolidayCalendar;
-use App\Support\Timesheets\CsvImporter;
-use App\Support\Timesheets\TemplateImporter;
 use App\Support\Timesheets\TimesheetLayout;
 use DOMDocument;
 use DOMElement;
 use DOMXPath;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
@@ -56,8 +52,8 @@ class AttendanceController extends Controller
     ];
 
     /**
-     * The table body the weekend shading spans. The date column is left out
-     * because it carries its own grey on every row.
+     * The table body the weekend shading always spans. The date column and the
+     * columns a template adds past these are shaded too; see shadeRow().
      *
      * @var list<string>
      */
@@ -212,110 +208,6 @@ class AttendanceController extends Controller
     }
 
     /**
-     * Merge the rows of an uploaded timesheet into the log. Every day the file
-     * carries is rewritten from the file; every day it leaves out is kept as it
-     * stands, because a timesheet covers one month and must not take the rest
-     * of the log down with it.
-     *
-     * @throws ValidationException
-     */
-    public function upload(Request $request, TemplateImporter $template, CsvImporter $csv): RedirectResponse
-    {
-        $request->validate([
-            'file' => ['required', 'file', 'extensions:xlsx,csv,txt', 'max:2048'],
-        ]);
-
-        $file = $request->file('file');
-
-        $entries = $this->newestFirst($file->getClientOriginalExtension() === 'xlsx'
-            ? $template->import($file->getRealPath())
-            : $csv->import($file->getRealPath()));
-
-        if ($entries === []) {
-            throw ValidationException::withMessages([
-                'file' => 'The timesheet has no attendance rows to import.',
-            ]);
-        }
-
-        $days = array_keys($this->groupByDate($entries));
-
-        $this->guardOneOpenEntry($request, $entries, $days);
-
-        /** An upload rewrites whole days, so a half written import must not survive. */
-        DB::transaction(function () use ($request, $entries, $days): void {
-            $request->user()->attendances()
-                ->where(fn (Builder $query): Builder => $this->onAnyDay($query, $days))
-                ->delete();
-
-            $request->user()->attendances()->createMany(array_map(fn (array $entry): array => [
-                'clocked_in_at' => Carbon::parse($entry['clockedInAt']),
-                'clocked_out_at' => $entry['clockedOutAt'] !== null ? Carbon::parse($entry['clockedOutAt']) : null,
-                'status' => $entry['status'],
-                'description' => $entry['description'],
-                'extra' => $entry['extra'],
-            ], $entries));
-        });
-
-        return to_route('attendance.index');
-    }
-
-    /**
-     * Only one day may be left running at a time. The file's own rows are
-     * counted together with the running days it does not cover, since a merge
-     * leaves those in place.
-     *
-     * @param  list<Entry>  $entries
-     * @param  list<string>  $days
-     *
-     * @throws ValidationException
-     */
-    private function guardOneOpenEntry(Request $request, array $entries, array $days): void
-    {
-        $uploaded = count(array_filter(
-            $entries,
-            fn (array $entry): bool => $entry['clockedOutAt'] === null && $entry['status'] === TimesheetLayout::PRESENT,
-        ));
-
-        if ($uploaded > 1) {
-            throw ValidationException::withMessages([
-                'file' => 'Only one entry may be left without a clock out time.',
-            ]);
-        }
-
-        $kept = $request->user()->attendances()
-            ->whereNull('clocked_out_at')
-            ->where('status', TimesheetLayout::PRESENT)
-            ->whereNot(fn (Builder $query): Builder => $this->onAnyDay($query, $days))
-            ->count();
-
-        if ($uploaded + $kept > 1) {
-            throw ValidationException::withMessages([
-                'file' => 'Another day is still running. Close it before importing a timesheet that leaves an entry open.',
-            ]);
-        }
-    }
-
-    /**
-     * Narrow a query to the entries clocked into on any of the given days. The
-     * days are matched as ranges rather than with a date function so the
-     * user and clock in index still carries the lookup.
-     *
-     * @param  Builder<Attendance>  $query
-     * @param  list<string>  $days
-     * @return Builder<Attendance>
-     */
-    private function onAnyDay(Builder $query, array $days): Builder
-    {
-        foreach ($days as $day) {
-            $start = Carbon::createFromFormat('Y-m-d', $day)->startOfDay();
-
-            $query->orWhereBetween('clocked_in_at', [$start, $start->copy()->endOfDay()]);
-        }
-
-        return $query;
-    }
-
-    /**
      * Copy the template and write the requested month into it: the period label,
      * the date column, and each day's hours. Days without attendance keep the
      * empty cells the template author laid out.
@@ -384,7 +276,7 @@ class AttendanceController extends Controller
             /** The template holds 31 day rows, so a shorter month leaves spares to clear. */
             if ($dayOfMonth > $daysInMonth) {
                 $this->clearRow($xpath, $row, $columns);
-                $this->shadeRow($xpath, $cellXfs, $row, self::PLAIN_FILL);
+                $this->shadeRow($xpath, $cellXfs, $row, self::PLAIN_FILL, $weekendFill, $columns);
 
                 continue;
             }
@@ -405,6 +297,8 @@ class AttendanceController extends Controller
                 $cellXfs,
                 $row,
                 $date->isWeekend() || $holiday !== null ? $weekendFill : self::PLAIN_FILL,
+                $weekendFill,
+                $columns,
             );
 
             $day = $byDate[$key] ?? [];
@@ -488,19 +382,6 @@ class AttendanceController extends Controller
     }
 
     /**
-     * The page and the template both read the log newest first.
-     *
-     * @param  list<Entry>  $entries
-     * @return list<Entry>
-     */
-    private function newestFirst(array $entries): array
-    {
-        usort($entries, fn (array $first, array $second): int => strcmp($second['clockedInAt'], $first['clockedInAt']));
-
-        return $entries;
-    }
-
-    /**
      * @param  list<Entry>  $entries
      * @return array<string, non-empty-list<Entry>>
      */
@@ -536,8 +417,7 @@ class AttendanceController extends Controller
     }
 
     /**
-     * The inverse of the importer's own serial reading, so a written date reads
-     * back as the same day.
+     * The Excel date serial for the given day, counted from midnight UTC.
      */
     private function serialFromDate(Carbon $date): float
     {
@@ -602,20 +482,49 @@ class AttendanceController extends Controller
     }
 
     /**
-     * Repaint a day row's background, keeping every other part of each cell's
-     * format - its borders, fonts and number formats - exactly as it was.
+     * Repaint a day row's background across the whole table, keeping every
+     * other part of each cell's format - its borders, fonts and number
+     * formats - exactly as it was.
+     *
+     * The columns a template adds after the fixed layout belong to the table,
+     * so they are shaded with it. The date column is repainted only where the
+     * template shaded it by the calendar, as plain or weekend grey; a template
+     * that greys every date keeps that grey.
+     *
+     * @param  list<array{column: string, label: string}>  $extraColumns
      */
-    private function shadeRow(DOMXPath $xpath, DOMElement $cellXfs, int $row, int $fillId): void
+    private function shadeRow(DOMXPath $xpath, DOMElement $cellXfs, int $row, int $fillId, int $weekendFill, array $extraColumns): void
     {
-        foreach (self::SHADED_COLUMNS as $column) {
+        $date = $this->find($xpath, '//x:c[@r="'.TimesheetLayout::DATE_COLUMN.$row.'"]');
+
+        if ($date !== null && in_array($this->fillOf($cellXfs, $date), [self::PLAIN_FILL, $weekendFill], true)) {
+            $this->paint($cellXfs, $date, $fillId);
+        }
+
+        $columns = array_unique([...self::SHADED_COLUMNS, ...array_column($extraColumns, 'column')]);
+
+        foreach ($columns as $column) {
             $cell = $this->find($xpath, '//x:c[@r="'.$column.$row.'"]');
 
-            if ($cell === null) {
-                continue;
+            if ($cell !== null) {
+                $this->paint($cellXfs, $cell, $fillId);
             }
-
-            $cell->setAttribute('s', (string) $this->variantOf($cellXfs, (int) $cell->getAttribute('s'), $fillId));
         }
+    }
+
+    private function paint(DOMElement $cellXfs, DOMElement $cell, int $fillId): void
+    {
+        $cell->setAttribute('s', (string) $this->variantOf($cellXfs, (int) $cell->getAttribute('s'), $fillId));
+    }
+
+    /**
+     * The fill the cell's current format paints with.
+     */
+    private function fillOf(DOMElement $cellXfs, DOMElement $cell): int
+    {
+        $format = $cellXfs->getElementsByTagName('xf')->item((int) $cell->getAttribute('s'));
+
+        return $format instanceof DOMElement ? (int) $format->getAttribute('fillId') : self::PLAIN_FILL;
     }
 
     /**
